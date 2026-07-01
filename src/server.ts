@@ -2,10 +2,21 @@ import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
-import { createClient } from '@supabase/supabase-js';
 import session from 'express-session';
 import bcrypt from 'bcryptjs';
+import {
+  sendError,
+  getErrorMessage,
+  isSupabaseNetworkError,
+  isSupabaseAuthError,
+  isSupabaseTableError,
+} from './apiErrors';
+import {
+  createSupabaseClient,
+  getSupabaseStatus,
+  verifySupabaseConnection,
+  type SupabaseStatus,
+} from './supabaseConfig';
 
 // Types
 import { Project, Task, TeamMember, Activity, Milestone, AuthUser, TaskStatus, TaskPriority, ProjectCategory } from './types';
@@ -37,6 +48,7 @@ app.use(session({
   cookie: {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
     maxAge: 1000 * 60 * 60 * 24 * 7  // 7 days
   }
 }));
@@ -49,22 +61,24 @@ declare module 'express-session' {
 }
 
 // ─── Supabase Client ────────────────────────────────────────────────────────
-const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_KEY;
+const { client: supabase, status: initialSupabaseStatus } = createSupabaseClient();
+let supabaseStatus: SupabaseStatus = initialSupabaseStatus;
 
-const isSupabaseConfigured = supabaseUrl && supabaseKey &&
-                             !supabaseUrl.includes('your-project-id') &&
-                             !supabaseKey.includes('your-supabase-service-role-key') &&
-                             supabaseUrl !== 'MY_SUPABASE_URL' &&
-                             supabaseKey !== 'MY_SUPABASE_KEY';
-
-const supabase = isSupabaseConfigured ? createClient(supabaseUrl!, supabaseKey!) : null;
-
-if (isSupabaseConfigured) {
-  console.log('Backend: Supabase client initialized successfully.');
-} else {
-  console.warn('Backend: Supabase credentials not set or invalid in env. Using in-memory fallback database.');
+if (supabaseStatus.mode === 'memory') {
+  console.warn(
+    'Backend: Using in-memory fallback database.',
+    supabaseStatus.issues.length > 0 ? supabaseStatus.issues.join(' ') : ''
+  );
 }
+
+void (async () => {
+  if (!supabase) return;
+  const connectionError = await verifySupabaseConnection(supabase);
+  supabaseStatus = getSupabaseStatus(supabase, connectionError);
+  if (connectionError) {
+    console.error('Backend: Supabase connection check failed:', connectionError);
+  }
+})();
 
 // ─── In-Memory Fallback ─────────────────────────────────────────────────────
 let localProjects = [...INITIAL_PROJECTS];
@@ -82,7 +96,7 @@ const FALLBACK_USERS: (AuthUser & { passwordHash: string })[] = [
     email: 'abdselam@devsync.app',
     role: 'admin',
     avatar: 'AB',
-    passwordHash: bcrypt.hashSync('DevSync@Abs2024!', 12)
+    passwordHash: '$2b$12$0uA/8PDIctP1gb1C1faMc.LRjPCvF2mJ8L0nnx7M.bAMXJQkCAHk2'
   },
   {
     id: 'u-2',
@@ -91,7 +105,7 @@ const FALLBACK_USERS: (AuthUser & { passwordHash: string })[] = [
     email: 'bereket@devsync.app',
     role: 'admin',
     avatar: 'BE',
-    passwordHash: bcrypt.hashSync('DevSync@Ber2024!', 12)
+    passwordHash: '$2b$12$O79ERnPnA1KVm20tmekwo.JRwkSwcNA8V2sDYoWG7WmXpODlbun1W'
   }
 ];
 
@@ -284,8 +298,31 @@ async function recalculateProjectProgress(projectId: string) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HEALTH / DIAGNOSTICS
+// ═══════════════════════════════════════════════════════════════════════════
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({
+    ok: supabaseStatus.connected || supabaseStatus.mode === 'memory',
+    auth: {
+      mode: supabaseStatus.mode,
+      supabaseConfigured: supabaseStatus.configured,
+      supabaseConnected: supabaseStatus.connected,
+      keyType: supabaseStatus.keyType,
+      keySource: supabaseStatus.keySource,
+      issues: supabaseStatus.issues,
+      lastError: supabaseStatus.lastError,
+    },
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // AUTH ENDPOINTS (public – no requireAuth)
 // ═══════════════════════════════════════════════════════════════════════════
+
+function findFallbackUser(username: string) {
+  return FALLBACK_USERS.find(u => u.username === username.toLowerCase().trim()) ?? null;
+}
 
 // POST /api/auth/login
 app.post('/api/auth/login', async (req: Request, res: Response) => {
@@ -293,28 +330,68 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required.' });
+      return sendError(res, 400, {
+        error: 'Username and password are required.',
+        code: 'VALIDATION_ERROR',
+      });
     }
 
+    const normalizedUsername = username.toLowerCase().trim();
     let userRecord: (AuthUser & { passwordHash: string }) | null = null;
+    let usedFallbackAuth = false;
 
     if (supabase) {
-      // Fetch user from Supabase
       const { data, error } = await supabase
         .from('app_users')
         .select('*')
-        .eq('username', username.toLowerCase().trim())
-        .single();
+        .eq('username', normalizedUsername)
+        .maybeSingle();
 
       if (error) {
-        // Table may not exist yet — fall back to in-memory users
-        const found = FALLBACK_USERS.find(u => u.username === username.toLowerCase().trim());
-        if (!found) {
-          return res.status(401).json({ error: 'Invalid username or password.' });
+        supabaseStatus = getSupabaseStatus(supabase, error.message);
+
+        if (isSupabaseAuthError(error.message, error.code)) {
+          return sendError(res, 503, {
+            error: 'Supabase rejected the server API key.',
+            code: 'SUPABASE_CONFIG_ERROR',
+            hint: 'Set SUPABASE_SERVICE_ROLE_KEY in Vercel. Do not use NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY for server auth.',
+            details: error.message,
+          });
         }
-        userRecord = found;
+
+        if (isSupabaseNetworkError(error.message)) {
+          return sendError(res, 503, {
+            error: 'Could not connect to Supabase.',
+            code: 'SUPABASE_CONNECTION_ERROR',
+            hint: 'Verify SUPABASE_URL is correct and your Supabase project is running.',
+            details: error.message,
+          });
+        }
+
+        if (isSupabaseTableError(error.message, error.code)) {
+          const found = findFallbackUser(normalizedUsername);
+          if (!found) {
+            return sendError(res, 401, {
+              error: 'Invalid username or password.',
+              code: 'AUTH_FAILED',
+              hint: 'The app_users table is missing in Supabase. Run supabase_schema.sql or use abdselam / bereket with in-memory auth.',
+            });
+          }
+          userRecord = found;
+          usedFallbackAuth = true;
+        } else {
+          return sendError(res, 503, {
+            error: 'Supabase query failed during login.',
+            code: 'SUPABASE_QUERY_ERROR',
+            hint: 'Check Vercel function logs and confirm the app_users table exists.',
+            details: error.message,
+          });
+        }
       } else if (!data) {
-        return res.status(401).json({ error: 'Invalid username or password.' });
+        return sendError(res, 401, {
+          error: 'Invalid username or password.',
+          code: 'AUTH_FAILED',
+        });
       } else {
         userRecord = {
           ...mapUserFromDb(data),
@@ -322,21 +399,36 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
         };
       }
     } else {
-      // Fallback: use in-memory users
-      const found = FALLBACK_USERS.find(u => u.username === username.toLowerCase().trim());
+      const found = findFallbackUser(normalizedUsername);
       if (!found) {
-        return res.status(401).json({ error: 'Invalid username or password.' });
+        return sendError(res, 401, {
+          error: 'Invalid username or password.',
+          code: 'AUTH_FAILED',
+          hint: supabaseStatus.issues.length > 0 ? supabaseStatus.issues[0] : undefined,
+        });
       }
       userRecord = found;
+      usedFallbackAuth = true;
     }
 
-    // Verify password
+    if (!userRecord?.passwordHash) {
+      return sendError(res, 500, {
+        error: 'User record is missing a password hash.',
+        code: 'INTERNAL_ERROR',
+        hint: usedFallbackAuth
+          ? 'In-memory auth is active. Try abdselam or bereket.'
+          : 'Check the app_users.password_hash column in Supabase.',
+      });
+    }
+
     const isValid = await bcrypt.compare(password, userRecord.passwordHash);
     if (!isValid) {
-      return res.status(401).json({ error: 'Invalid username or password.' });
+      return sendError(res, 401, {
+        error: 'Invalid username or password.',
+        code: 'AUTH_FAILED',
+      });
     }
 
-    // Build safe user object (no hash)
     const safeUser: AuthUser = {
       id: userRecord.id,
       username: userRecord.username,
@@ -346,34 +438,76 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       avatar: userRecord.avatar
     };
 
-    // Store in session
+    if (!req.session) {
+      return sendError(res, 500, {
+        error: 'Session is unavailable on the server.',
+        code: 'SESSION_ERROR',
+        hint: 'Set SESSION_SECRET in Vercel environment variables and redeploy.',
+      });
+    }
+
     req.session.user = safeUser;
     req.session.save((err) => {
       if (err) {
         console.error('Session save error:', err);
-        return res.status(500).json({ error: 'Failed to create session.' });
+        return sendError(res, 500, {
+          error: 'Login succeeded but the session could not be saved.',
+          code: 'SESSION_ERROR',
+          hint: process.env.VERCEL
+            ? 'Vercel serverless uses in-memory sessions that may not persist between requests.'
+            : 'Check SESSION_SECRET and server logs.',
+          details: getErrorMessage(err),
+        });
       }
-      return res.json({ user: safeUser });
+      return res.json({
+        user: safeUser,
+        authMode: usedFallbackAuth || supabaseStatus.mode === 'memory' ? 'memory' : 'supabase',
+      });
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('Login error:', err);
-    res.status(500).json({ error: err.message });
+    return sendError(res, 500, {
+      error: 'Unexpected server error during login.',
+      code: 'INTERNAL_ERROR',
+      details: getErrorMessage(err),
+    });
   }
 });
 
 // GET /api/auth/me – returns current session user
 app.get('/api/auth/me', (req: Request, res: Response) => {
-  if (req.session && req.session.user) {
-    return res.json({ user: req.session.user });
+  try {
+    if (req.session?.user) {
+      return res.json({ user: req.session.user });
+    }
+    return sendError(res, 401, {
+      error: 'Not authenticated.',
+      code: 'UNAUTHORIZED',
+    });
+  } catch (err: unknown) {
+    console.error('/api/auth/me error:', err);
+    return sendError(res, 500, {
+      error: 'Failed to read the current session.',
+      code: 'SESSION_ERROR',
+      hint: 'Set SESSION_SECRET in Vercel and redeploy.',
+      details: getErrorMessage(err),
+    });
   }
-  return res.status(401).json({ error: 'Not authenticated.' });
 });
 
 // POST /api/auth/logout
 app.post('/api/auth/logout', (req: Request, res: Response) => {
+  if (!req.session) {
+    return res.json({ message: 'Logged out successfully.' });
+  }
+
   req.session.destroy((err) => {
     if (err) {
-      return res.status(500).json({ error: 'Failed to destroy session.' });
+      return sendError(res, 500, {
+        error: 'Failed to destroy session.',
+        code: 'SESSION_ERROR',
+        details: getErrorMessage(err),
+      });
     }
     res.clearCookie('connect.sid');
     return res.json({ message: 'Logged out successfully.' });
@@ -818,6 +952,7 @@ async function startServer() {
   const port = parseInt(process.env.PORT || '3000', 10);
 
   if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -839,9 +974,27 @@ async function startServer() {
   });
 }
 
+// Return structured JSON for unhandled API errors.
+app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+  if (!req.path.startsWith('/api')) {
+    return next(err);
+  }
+
+  console.error('Unhandled API error:', err);
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  return sendError(res, 500, {
+    error: 'Unexpected server error.',
+    code: 'INTERNAL_ERROR',
+    details: getErrorMessage(err),
+  });
+});
+
 export default app;
 
-// Vercel runs the Express app via api/index.ts; only start a standalone server locally.
+// Vercel runs the Express app via api/[[...path]].ts; only start a standalone server locally.
 if (!process.env.VERCEL) {
   startServer();
 }

@@ -7,6 +7,7 @@ import React, {
   ReactNode
 } from 'react';
 import { AuthUser } from '../types';
+import { formatApiError } from '../apiClient';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -47,16 +48,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ username, password })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        return { error: data.error || 'Login failed.' };
+        return { error: formatApiError(data, `Login failed. (HTTP ${res.status})`) };
+      }
+
+      if (!data?.user) {
+        return { error: 'Login response was missing user data.' };
       }
 
       setUser(data.user);
       return {};
     } catch {
-      return { error: 'Network error. Please try again.' };
+      return { error: 'Network error. Check your connection and try again.' };
     }
   }, []);
 

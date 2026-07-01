@@ -3,10 +3,147 @@ import express from "express";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import { createServer as createViteServer } from "vite";
-import { createClient } from "@supabase/supabase-js";
 import session from "express-session";
 import bcrypt from "bcryptjs";
+
+// src/apiErrors.ts
+function sendError(res, status, body) {
+  return res.status(status).json(body);
+}
+function getErrorMessage(err) {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return "Unknown error";
+}
+function isSupabaseNetworkError(message) {
+  const lower = message.toLowerCase();
+  return lower.includes("fetch failed") || lower.includes("network") || lower.includes("econnrefused") || lower.includes("enotfound") || lower.includes("timeout") || lower.includes("failed to fetch");
+}
+function isSupabaseAuthError(message, code) {
+  if (code === "PGRST301" || code === "401" || code === "403") return true;
+  const lower = message.toLowerCase();
+  return lower.includes("invalid api key") || lower.includes("jwt") || lower.includes("unauthorized") || lower.includes("permission denied");
+}
+function isSupabaseTableError(message, code) {
+  if (code === "PGRST116" || code === "42P01") return true;
+  const lower = message.toLowerCase();
+  return lower.includes("does not exist") || lower.includes("could not find the table") || lower.includes("relation") && lower.includes("does not exist");
+}
+
+// src/supabaseConfig.ts
+import { createClient } from "@supabase/supabase-js";
+function decodeJwtRole(key) {
+  if (!key.startsWith("eyJ")) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(key.split(".")[1], "base64url").toString("utf8"));
+    if (payload.role === "service_role") return "service_role";
+    if (payload.role === "anon") return "anon";
+    return null;
+  } catch {
+    return null;
+  }
+}
+function detectKeyType(key) {
+  if (!key) return "missing";
+  if (key.startsWith("sb_publishable_")) return "publishable";
+  if (!key.startsWith("eyJ")) return "invalid";
+  return decodeJwtRole(key) ?? "invalid";
+}
+function resolveSupabaseEnv() {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || null;
+  const candidates = [
+    { source: "SUPABASE_SERVICE_ROLE_KEY", value: process.env.SUPABASE_SERVICE_ROLE_KEY },
+    { source: "SUPABASE_ANON_KEY", value: process.env.SUPABASE_ANON_KEY },
+    { source: "NEXT_PUBLIC_SUPABASE_ANON_KEY", value: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY },
+    { source: "SUPABASE_KEY", value: process.env.SUPABASE_KEY },
+    { source: "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", value: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }
+  ];
+  const selected = candidates.find(({ value }) => value && value.trim().length > 0);
+  const key = selected?.value?.trim();
+  const keySource = selected?.source ?? null;
+  const keyType = detectKeyType(key);
+  return { url: url?.trim() || null, key, keySource, keyType };
+}
+function buildStatus(partial) {
+  return { ...partial };
+}
+function getSupabaseStatus(client, lastError = null) {
+  const { url, key, keySource, keyType } = resolveSupabaseEnv();
+  const issues = [];
+  if (!url || url.includes("your-project-id") || url === "MY_SUPABASE_URL") {
+    issues.push("SUPABASE_URL is missing or still set to a placeholder value.");
+  }
+  if (keyType === "missing") {
+    issues.push("No Supabase API key found. Set SUPABASE_SERVICE_ROLE_KEY (recommended) or SUPABASE_ANON_KEY.");
+  } else if (keyType === "publishable") {
+    issues.push(
+      "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (sb_publishable_...) cannot be used for server-side API calls. Use SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY instead."
+    );
+  } else if (keyType === "invalid") {
+    issues.push("The configured Supabase key is not a valid JWT API key.");
+  } else if (keyType === "anon") {
+    issues.push(
+      "Using the anon key on the server. For login and protected tables, prefer SUPABASE_SERVICE_ROLE_KEY to avoid RLS issues."
+    );
+  }
+  const configured = Boolean(
+    client && url && key && keyType !== "missing" && keyType !== "publishable" && keyType !== "invalid"
+  );
+  return buildStatus({
+    configured,
+    connected: configured && !lastError,
+    mode: configured ? "supabase" : "memory",
+    url,
+    keyType,
+    keySource,
+    issues,
+    lastError
+  });
+}
+function createSupabaseClient() {
+  const { url, key, keySource, keyType } = resolveSupabaseEnv();
+  let lastError = null;
+  if (!url || !key) {
+    return {
+      client: null,
+      status: getSupabaseStatus(null)
+    };
+  }
+  if (keyType === "publishable" || keyType === "invalid") {
+    lastError = keyType === "publishable" ? "Publishable keys (sb_publishable_...) are not supported for server-side Supabase queries." : "Supabase API key format is invalid.";
+    console.warn(`Backend: ${lastError} Falling back to in-memory data.`);
+    return {
+      client: null,
+      status: getSupabaseStatus(null, lastError)
+    };
+  }
+  try {
+    const client = createClient(url, key, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
+    const status = getSupabaseStatus(client);
+    console.log(`Backend: Supabase client initialized (${keyType} key from ${keySource}).`);
+    if (status.issues.length > 0) {
+      console.warn("Backend Supabase warnings:", status.issues.join(" "));
+    }
+    return { client, status };
+  } catch (err) {
+    lastError = err instanceof Error ? err.message : "Failed to create Supabase client.";
+    console.error("Backend: Supabase initialization failed:", lastError);
+    return {
+      client: null,
+      status: getSupabaseStatus(null, lastError)
+    };
+  }
+}
+async function verifySupabaseConnection(client) {
+  const { error } = await client.from("app_users").select("id").limit(1);
+  if (!error) return null;
+  if (error.code === "PGRST116") {
+    return null;
+  }
+  return error.message;
+}
 
 // src/mockData.ts
 var INITIAL_TEAM_MEMBERS = [
@@ -345,19 +482,27 @@ app.use(session({
   cookie: {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
     maxAge: 1e3 * 60 * 60 * 24 * 7
     // 7 days
   }
 }));
-var supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-var supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_KEY;
-var isSupabaseConfigured = supabaseUrl && supabaseKey && !supabaseUrl.includes("your-project-id") && !supabaseKey.includes("your-supabase-service-role-key") && supabaseUrl !== "MY_SUPABASE_URL" && supabaseKey !== "MY_SUPABASE_KEY";
-var supabase = isSupabaseConfigured ? createClient(supabaseUrl, supabaseKey) : null;
-if (isSupabaseConfigured) {
-  console.log("Backend: Supabase client initialized successfully.");
-} else {
-  console.warn("Backend: Supabase credentials not set or invalid in env. Using in-memory fallback database.");
+var { client: supabase, status: initialSupabaseStatus } = createSupabaseClient();
+var supabaseStatus = initialSupabaseStatus;
+if (supabaseStatus.mode === "memory") {
+  console.warn(
+    "Backend: Using in-memory fallback database.",
+    supabaseStatus.issues.length > 0 ? supabaseStatus.issues.join(" ") : ""
+  );
 }
+void (async () => {
+  if (!supabase) return;
+  const connectionError = await verifySupabaseConnection(supabase);
+  supabaseStatus = getSupabaseStatus(supabase, connectionError);
+  if (connectionError) {
+    console.error("Backend: Supabase connection check failed:", connectionError);
+  }
+})();
 var localProjects = [...INITIAL_PROJECTS];
 var localTasks = [...INITIAL_TASKS];
 var localTeamMembers = [...INITIAL_TEAM_MEMBERS];
@@ -371,7 +516,7 @@ var FALLBACK_USERS = [
     email: "abdselam@devsync.app",
     role: "admin",
     avatar: "AB",
-    passwordHash: bcrypt.hashSync("DevSync@Abs2024!", 12)
+    passwordHash: "$2b$12$0uA/8PDIctP1gb1C1faMc.LRjPCvF2mJ8L0nnx7M.bAMXJQkCAHk2"
   },
   {
     id: "u-2",
@@ -380,7 +525,7 @@ var FALLBACK_USERS = [
     email: "bereket@devsync.app",
     role: "admin",
     avatar: "BE",
-    passwordHash: bcrypt.hashSync("DevSync@Ber2024!", 12)
+    passwordHash: "$2b$12$O79ERnPnA1KVm20tmekwo.JRwkSwcNA8V2sDYoWG7WmXpODlbun1W"
   }
 ];
 function mapProjectFromDb(p) {
@@ -537,23 +682,79 @@ async function recalculateProjectProgress(projectId) {
     );
   }
 }
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: supabaseStatus.connected || supabaseStatus.mode === "memory",
+    auth: {
+      mode: supabaseStatus.mode,
+      supabaseConfigured: supabaseStatus.configured,
+      supabaseConnected: supabaseStatus.connected,
+      keyType: supabaseStatus.keyType,
+      keySource: supabaseStatus.keySource,
+      issues: supabaseStatus.issues,
+      lastError: supabaseStatus.lastError
+    }
+  });
+});
+function findFallbackUser(username) {
+  return FALLBACK_USERS.find((u) => u.username === username.toLowerCase().trim()) ?? null;
+}
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) {
-      return res.status(400).json({ error: "Username and password are required." });
+      return sendError(res, 400, {
+        error: "Username and password are required.",
+        code: "VALIDATION_ERROR"
+      });
     }
+    const normalizedUsername = username.toLowerCase().trim();
     let userRecord = null;
+    let usedFallbackAuth = false;
     if (supabase) {
-      const { data, error } = await supabase.from("app_users").select("*").eq("username", username.toLowerCase().trim()).single();
+      const { data, error } = await supabase.from("app_users").select("*").eq("username", normalizedUsername).maybeSingle();
       if (error) {
-        const found = FALLBACK_USERS.find((u) => u.username === username.toLowerCase().trim());
-        if (!found) {
-          return res.status(401).json({ error: "Invalid username or password." });
+        supabaseStatus = getSupabaseStatus(supabase, error.message);
+        if (isSupabaseAuthError(error.message, error.code)) {
+          return sendError(res, 503, {
+            error: "Supabase rejected the server API key.",
+            code: "SUPABASE_CONFIG_ERROR",
+            hint: "Set SUPABASE_SERVICE_ROLE_KEY in Vercel. Do not use NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY for server auth.",
+            details: error.message
+          });
         }
-        userRecord = found;
+        if (isSupabaseNetworkError(error.message)) {
+          return sendError(res, 503, {
+            error: "Could not connect to Supabase.",
+            code: "SUPABASE_CONNECTION_ERROR",
+            hint: "Verify SUPABASE_URL is correct and your Supabase project is running.",
+            details: error.message
+          });
+        }
+        if (isSupabaseTableError(error.message, error.code)) {
+          const found = findFallbackUser(normalizedUsername);
+          if (!found) {
+            return sendError(res, 401, {
+              error: "Invalid username or password.",
+              code: "AUTH_FAILED",
+              hint: "The app_users table is missing in Supabase. Run supabase_schema.sql or use abdselam / bereket with in-memory auth."
+            });
+          }
+          userRecord = found;
+          usedFallbackAuth = true;
+        } else {
+          return sendError(res, 503, {
+            error: "Supabase query failed during login.",
+            code: "SUPABASE_QUERY_ERROR",
+            hint: "Check Vercel function logs and confirm the app_users table exists.",
+            details: error.message
+          });
+        }
       } else if (!data) {
-        return res.status(401).json({ error: "Invalid username or password." });
+        return sendError(res, 401, {
+          error: "Invalid username or password.",
+          code: "AUTH_FAILED"
+        });
       } else {
         userRecord = {
           ...mapUserFromDb(data),
@@ -561,15 +762,30 @@ app.post("/api/auth/login", async (req, res) => {
         };
       }
     } else {
-      const found = FALLBACK_USERS.find((u) => u.username === username.toLowerCase().trim());
+      const found = findFallbackUser(normalizedUsername);
       if (!found) {
-        return res.status(401).json({ error: "Invalid username or password." });
+        return sendError(res, 401, {
+          error: "Invalid username or password.",
+          code: "AUTH_FAILED",
+          hint: supabaseStatus.issues.length > 0 ? supabaseStatus.issues[0] : void 0
+        });
       }
       userRecord = found;
+      usedFallbackAuth = true;
+    }
+    if (!userRecord?.passwordHash) {
+      return sendError(res, 500, {
+        error: "User record is missing a password hash.",
+        code: "INTERNAL_ERROR",
+        hint: usedFallbackAuth ? "In-memory auth is active. Try abdselam or bereket." : "Check the app_users.password_hash column in Supabase."
+      });
     }
     const isValid = await bcrypt.compare(password, userRecord.passwordHash);
     if (!isValid) {
-      return res.status(401).json({ error: "Invalid username or password." });
+      return sendError(res, 401, {
+        error: "Invalid username or password.",
+        code: "AUTH_FAILED"
+      });
     }
     const safeUser = {
       id: userRecord.id,
@@ -579,29 +795,68 @@ app.post("/api/auth/login", async (req, res) => {
       role: userRecord.role,
       avatar: userRecord.avatar
     };
+    if (!req.session) {
+      return sendError(res, 500, {
+        error: "Session is unavailable on the server.",
+        code: "SESSION_ERROR",
+        hint: "Set SESSION_SECRET in Vercel environment variables and redeploy."
+      });
+    }
     req.session.user = safeUser;
     req.session.save((err) => {
       if (err) {
         console.error("Session save error:", err);
-        return res.status(500).json({ error: "Failed to create session." });
+        return sendError(res, 500, {
+          error: "Login succeeded but the session could not be saved.",
+          code: "SESSION_ERROR",
+          hint: process.env.VERCEL ? "Vercel serverless uses in-memory sessions that may not persist between requests." : "Check SESSION_SECRET and server logs.",
+          details: getErrorMessage(err)
+        });
       }
-      return res.json({ user: safeUser });
+      return res.json({
+        user: safeUser,
+        authMode: usedFallbackAuth || supabaseStatus.mode === "memory" ? "memory" : "supabase"
+      });
     });
   } catch (err) {
     console.error("Login error:", err);
-    res.status(500).json({ error: err.message });
+    return sendError(res, 500, {
+      error: "Unexpected server error during login.",
+      code: "INTERNAL_ERROR",
+      details: getErrorMessage(err)
+    });
   }
 });
 app.get("/api/auth/me", (req, res) => {
-  if (req.session && req.session.user) {
-    return res.json({ user: req.session.user });
+  try {
+    if (req.session?.user) {
+      return res.json({ user: req.session.user });
+    }
+    return sendError(res, 401, {
+      error: "Not authenticated.",
+      code: "UNAUTHORIZED"
+    });
+  } catch (err) {
+    console.error("/api/auth/me error:", err);
+    return sendError(res, 500, {
+      error: "Failed to read the current session.",
+      code: "SESSION_ERROR",
+      hint: "Set SESSION_SECRET in Vercel and redeploy.",
+      details: getErrorMessage(err)
+    });
   }
-  return res.status(401).json({ error: "Not authenticated." });
 });
 app.post("/api/auth/logout", (req, res) => {
+  if (!req.session) {
+    return res.json({ message: "Logged out successfully." });
+  }
   req.session.destroy((err) => {
     if (err) {
-      return res.status(500).json({ error: "Failed to destroy session." });
+      return sendError(res, 500, {
+        error: "Failed to destroy session.",
+        code: "SESSION_ERROR",
+        details: getErrorMessage(err)
+      });
     }
     res.clearCookie("connect.sid");
     return res.json({ message: "Logged out successfully." });
@@ -979,6 +1234,7 @@ async function startServer() {
   const isProduction = process.env.NODE_ENV === "production";
   const port = parseInt(process.env.PORT || "3000", 10);
   if (!isProduction) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa"
@@ -997,6 +1253,20 @@ async function startServer() {
     console.log(`Backend: Server is running on http://localhost:${port}`);
   });
 }
+app.use((err, req, res, next) => {
+  if (!req.path.startsWith("/api")) {
+    return next(err);
+  }
+  console.error("Unhandled API error:", err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  return sendError(res, 500, {
+    error: "Unexpected server error.",
+    code: "INTERNAL_ERROR",
+    details: getErrorMessage(err)
+  });
+});
 var server_default = app;
 if (!process.env.VERCEL) {
   startServer();
