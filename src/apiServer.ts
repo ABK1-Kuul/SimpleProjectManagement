@@ -38,6 +38,16 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(express.json());
 
+if (process.env.VERCEL) {
+  app.use((req, _res, next) => {
+    const originalUrl = req.headers['x-vercel-original-url'] ?? req.headers['x-forwarded-uri'];
+    if (typeof originalUrl === 'string') {
+      req.url = originalUrl;
+    }
+    next();
+  });
+}
+
 // ─── Session Middleware ─────────────────────────────────────────────────────
 const SESSION_SECRET = process.env.SESSION_SECRET || 'devsync_fallback_secret_change_me';
 
