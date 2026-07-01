@@ -1,4 +1,4 @@
-// src/server.ts
+// src/apiServer.ts
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
@@ -467,7 +467,7 @@ var INITIAL_MILESTONES = [
   }
 ];
 
-// src/server.ts
+// src/apiServer.ts
 dotenv.config();
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
@@ -1267,10 +1267,10 @@ app.use((err, req, res, next) => {
     details: getErrorMessage(err)
   });
 });
-var server_default = app;
+var apiServer_default = app;
 if (!process.env.VERCEL) {
   startServer();
 }
 export {
-  server_default as default
+  apiServer_default as default
 };

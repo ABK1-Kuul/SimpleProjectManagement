@@ -994,7 +994,7 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
 
 export default app;
 
-// Vercel runs the Express app via api/[[...path]].ts; only start a standalone server locally.
+// Vercel runs the Express app via api/index.ts; only start a standalone server locally.
 if (!process.env.VERCEL) {
   startServer();
 }
