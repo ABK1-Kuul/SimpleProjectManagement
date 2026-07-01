@@ -16,21 +16,15 @@ import NewTaskModal from './components/NewTaskModal';
 import CommandMenu from './components/CommandMenu';
 
 import { Project, Task, TeamMember, Activity, Milestone, TaskStatus, TaskPriority, ProjectCategory } from './types';
-import { 
-  INITIAL_PROJECTS, 
-  INITIAL_TASKS, 
-  INITIAL_TEAM_MEMBERS, 
-  INITIAL_ACTIVITIES, 
-  INITIAL_MILESTONES 
-} from './mockData';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
-  const [projects, setProjects] = useState<Project[]>(INITIAL_PROJECTS);
-  const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
-  const [teamMembers] = useState<TeamMember[]>(INITIAL_TEAM_MEMBERS);
-  const [activities, setActivities] = useState<Activity[]>(INITIAL_ACTIVITIES);
-  const [milestones, setMilestones] = useState<Milestone[]>(INITIAL_MILESTONES);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [milestones, setMilestones] = useState<Milestone[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
 
   // Filter or navigation context state
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -40,12 +34,39 @@ export default function App() {
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isCommandMenuOpen, setIsCommandMenuOpen] = useState(false);
 
-  // Recalculate Project Progress based on completed tasks
-  const recalculateProgress = (projId: string, currentTasks: Task[]) => {
-    const projectTasks = currentTasks.filter(t => t.projectId === projId);
-    if (projectTasks.length === 0) return 0;
-    const completedCount = projectTasks.filter(t => t.status === 'done').length;
-    return Math.round((completedCount / projectTasks.length) * 100);
+  // Retrieve and refresh workspace data from backend
+  const refreshData = async () => {
+    try {
+      const [projectsRes, tasksRes, teamRes, activitiesRes, milestonesRes] = await Promise.all([
+        fetch('/api/projects'),
+        fetch('/api/tasks'),
+        fetch('/api/team'),
+        fetch('/api/activities'),
+        fetch('/api/milestones')
+      ]);
+
+      if (!projectsRes.ok || !tasksRes.ok || !teamRes.ok || !activitiesRes.ok || !milestonesRes.ok) {
+        throw new Error('Server returned an error status while retrieving data');
+      }
+
+      const [projectsData, tasksData, teamData, activitiesData, milestonesData] = await Promise.all([
+        projectsRes.json(),
+        tasksRes.json(),
+        teamRes.json(),
+        activitiesRes.json(),
+        milestonesRes.json()
+      ]);
+
+      setProjects(projectsData);
+      setTasks(tasksData);
+      setTeamMembers(teamData);
+      setActivities(activitiesData);
+      setMilestones(milestonesData);
+    } catch (error) {
+      console.error('Failed to sync context with backend database:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Keyboard shortcut listener for Command Menu (⌘K)
@@ -60,172 +81,83 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Initial load
+  useEffect(() => {
+    refreshData();
+  }, []);
+
   // Update Task Status
-  const handleUpdateTaskStatus = (taskId: string, newStatus: TaskStatus) => {
-    setTasks((prevTasks) => {
-      const updated = prevTasks.map((task) => {
-        if (task.id === taskId) {
-          const originalStatus = task.status;
-          if (originalStatus !== newStatus) {
-            // Log task movement activity
-            const member = teamMembers.find(m => m.id === task.assigneeId) || { name: 'Someone' };
-            const proj = projects.find(p => p.id === task.projectId) || { name: 'project' };
-            const newAct: Activity = {
-              id: `act-${Date.now()}`,
-              user: member.name,
-              avatar: member.avatar || '??',
-              action: `shifted status of "${task.title.substring(0, 24)}..." to`,
-              target: newStatus.toUpperCase(),
-              timestamp: 'Just now',
-              type: 'task'
-            };
-            setActivities(prevAct => [newAct, ...prevAct]);
-          }
-          return { ...task, status: newStatus };
-        }
-        return task;
+  const handleUpdateTaskStatus = async (taskId: string, newStatus: TaskStatus) => {
+    try {
+      // Optimistic update for fluid drag-and-drop feedback
+      setTasks((prevTasks) =>
+        prevTasks.map((task) => (task.id === taskId ? { ...task, status: newStatus } : task))
+      );
+
+      const res = await fetch(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
       });
 
-      // Recalculate progress for the affected project
-      const targetTask = prevTasks.find(t => t.id === taskId);
-      if (targetTask) {
-        const newProjProgress = recalculateProgress(targetTask.projectId, updated);
-        setProjects((prevProjs) => 
-          prevProjs.map((p) => 
-            p.id === targetTask.projectId 
-              ? { ...p, progress: newProjProgress, lastUpdated: 'Just now' } 
-              : p
-          )
-        );
+      if (!res.ok) throw new Error('API refused task status change');
 
-        // Update milestones progress
-        setMilestones((prevMilestones) =>
-          prevMilestones.map((m) => {
-            if (m.projectId === targetTask.projectId) {
-              const completedTasksCount = updated.filter(t => t.projectId === m.projectId && t.status === 'done').length;
-              const totalTasksCount = updated.filter(t => t.projectId === m.projectId).length;
-              const pct = totalTasksCount > 0 ? Math.round((completedTasksCount / totalTasksCount) * 100) : 0;
-              return { 
-                ...m, 
-                progress: pct, 
-                status: pct === 100 ? 'completed' : m.status 
-              };
-            }
-            return m;
-          })
-        );
-      }
-
-      return updated;
-    });
+      // Refresh in background to sync calculated progress
+      await refreshData();
+    } catch (error) {
+      console.error('Failed to update task status:', error);
+      refreshData(); // Revert to source of truth
+    }
   };
 
   // Reassign task
-  const handleReassignTask = (taskId: string, newAssigneeId: string) => {
-    setTasks((prevTasks) => {
-      const updated = prevTasks.map((task) => {
-        if (task.id === taskId) {
-          const originalAssignee = task.assigneeId;
-          if (originalAssignee !== newAssigneeId) {
-            const member = teamMembers.find(m => m.id === newAssigneeId) || { name: 'Someone', avatar: '??' };
-            const newAct: Activity = {
-              id: `act-${Date.now()}`,
-              user: member.name,
-              avatar: member.avatar,
-              action: `accepted deployment dispatch for`,
-              target: task.title.substring(0, 24) + '...',
-              timestamp: 'Just now',
-              type: 'task'
-            };
-            setActivities(prevAct => [newAct, ...prevAct]);
-          }
-          return { ...task, assigneeId: newAssigneeId };
-        }
-        return task;
+  const handleReassignTask = async (taskId: string, newAssigneeId: string) => {
+    try {
+      setTasks((prevTasks) =>
+        prevTasks.map((task) => (task.id === taskId ? { ...task, assigneeId: newAssigneeId } : task))
+      );
+
+      const res = await fetch(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assigneeId: newAssigneeId })
       });
-      return updated;
-    });
+
+      if (!res.ok) throw new Error('API refused task reassignment');
+
+      await refreshData();
+    } catch (error) {
+      console.error('Failed to reassign task assignee:', error);
+      refreshData();
+    }
   };
 
   // Create Project Callback
-  const handleCreateProject = (newProjData: {
+  const handleCreateProject = async (newProjData: {
     name: string;
     description: string;
     category: ProjectCategory;
     repository: string;
     activeSprint: string;
   }) => {
-    const newId = `p-${Date.now()}`;
-    const newProject: Project = {
-      id: newId,
-      name: newProjData.name,
-      description: newProjData.description,
-      progress: 0,
-      activeSprint: newProjData.activeSprint,
-      category: newProjData.category,
-      repository: newProjData.repository,
-      issuesCount: 3,
-      openIssues: 3,
-      lastUpdated: 'Just now',
-      teamIds: ['1', '2'] // Default core team members allocated
-    };
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newProjData)
+      });
 
-    // Auto-create some helper boilerplate tasks for this new project
-    const defaultTasks: Task[] = [
-      {
-        id: `t-${Date.now()}-1`,
-        title: `Draft system design specifications`,
-        description: `Map microservices schema, state matrices, and security tokens for ${newProjData.name}.`,
-        status: 'todo',
-        priority: 'high',
-        projectId: newId,
-        assigneeId: '1', // Abdselam
-        dueDate: '2026-07-10',
-        tags: ['architecture', 'planning']
-      },
-      {
-        id: `t-${Date.now()}-2`,
-        title: `Configure base pipeline scaffolding`,
-        description: `Bootstrap project structure, ESLint validation, Tailwind configuration, and docker config.`,
-        status: 'todo',
-        priority: 'medium',
-        projectId: newId,
-        assigneeId: '2', // Sarah Jenkins
-        dueDate: '2026-07-12',
-        tags: ['setup', 'ci-cd']
-      }
-    ];
+      if (!res.ok) throw new Error('Failed to create project on server');
 
-    const newMilestone: Milestone = {
-      id: `m-${Date.now()}`,
-      projectId: newId,
-      name: `Release V1 Core Interface`,
-      dueDate: '2026-07-30',
-      status: 'pending',
-      progress: 0
-    };
-
-    const newActivity: Activity = {
-      id: `act-${Date.now()}`,
-      user: 'Elena Rostova',
-      avatar: 'ER',
-      action: 'initialized repository context',
-      target: newProjData.repository,
-      timestamp: 'Just now',
-      type: 'project'
-    };
-
-    setProjects(prev => [newProject, ...prev]);
-    setTasks(prev => [...prev, ...defaultTasks]);
-    setMilestones(prev => [...prev, newMilestone]);
-    setActivities(prev => [newActivity, ...prev]);
-    
-    // Jump straight to Dashboard to see the new project
-    setActiveTab('dashboard');
+      await refreshData();
+      setActiveTab('dashboard');
+    } catch (error) {
+      console.error('Error creating project:', error);
+    }
   };
 
   // Create Task Callback
-  const handleCreateTask = (newTaskData: {
+  const handleCreateTask = async (newTaskData: {
     title: string;
     description: string;
     priority: TaskPriority;
@@ -234,55 +166,26 @@ export default function App() {
     dueDate: string;
     tags: string[];
   }) => {
-    const newTask: Task = {
-      id: `t-${Date.now()}`,
-      title: newTaskData.title,
-      description: newTaskData.description,
-      status: 'todo',
-      priority: newTaskData.priority,
-      projectId: newTaskData.projectId,
-      assigneeId: newTaskData.assigneeId,
-      dueDate: newTaskData.dueDate,
-      tags: newTaskData.tags
-    };
-
-    const member = teamMembers.find(m => m.id === newTaskData.assigneeId) || { name: 'Someone', avatar: '??' };
-    const project = projects.find(p => p.id === newTaskData.projectId) || { name: 'Unknown' };
-
-    const newActivity: Activity = {
-      id: `act-${Date.now()}`,
-      user: member.name,
-      avatar: member.avatar,
-      action: `received assignment for "${newTaskData.title.substring(0, 20)}..." in`,
-      target: project.name,
-      timestamp: 'Just now',
-      type: 'task'
-    };
-
-    setTasks(prev => [newTask, ...prev]);
-    setActivities(prev => [newActivity, ...prev]);
-
-    // Recalculate progress of that project because count of tasks increased
-    setTimeout(() => {
-      setTasks((latestTasks) => {
-        const newProjProgress = recalculateProgress(newTaskData.projectId, latestTasks);
-        setProjects((prevProjs) => 
-          prevProjs.map((p) => 
-            p.id === newTaskData.projectId 
-              ? { ...p, progress: newProjProgress, lastUpdated: 'Just now' } 
-              : p
-          )
-        );
-        return latestTasks;
+    try {
+      const res = await fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newTaskData)
       });
-    }, 50);
+
+      if (!res.ok) throw new Error('Failed to create task on server');
+
+      await refreshData();
+    } catch (error) {
+      console.error('Error creating task:', error);
+    }
   };
 
   // Simulate developer action callback
-  const handleSimulateCommit = () => {
-    // Select a random developer
+  const handleSimulateCommit = async () => {
+    if (teamMembers.length === 0 || projects.length === 0) return;
+
     const randomDev = teamMembers[Math.floor(Math.random() * teamMembers.length)];
-    // Select a random project
     const randomProj = projects[Math.floor(Math.random() * projects.length)];
 
     const commitActions = [
@@ -294,24 +197,36 @@ export default function App() {
     ];
     
     const chosenAction = commitActions[Math.floor(Math.random() * commitActions.length)];
-    const newAct: Activity = {
-      id: `act-sim-${Date.now()}`,
-      user: randomDev.name,
-      avatar: randomDev.avatar,
-      action: chosenAction.text,
-      target: randomProj.name,
-      timestamp: 'Just now',
-      type: chosenAction.type
-    };
 
-    // Prepend activity
-    setActivities(prev => [newAct, ...prev]);
+    try {
+      const res = await fetch('/api/activities', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user: randomDev.name,
+          avatar: randomDev.avatar,
+          action: chosenAction.text,
+          target: randomProj.name,
+          type: chosenAction.type
+        })
+      });
 
-    // Randomly shift progress of one task to "done" to make the simulation look live!
-    const activeTasksOfProj = tasks.filter(t => t.projectId === randomProj.id && t.status !== 'done');
-    if (activeTasksOfProj.length > 0) {
-      const taskToFinish = activeTasksOfProj[Math.floor(Math.random() * activeTasksOfProj.length)];
-      handleUpdateTaskStatus(taskToFinish.id, 'done');
+      if (!res.ok) throw new Error('Failed to log activity simulation');
+
+      // Shift one random task to "done"
+      const activeTasksOfProj = tasks.filter(t => t.projectId === randomProj.id && t.status !== 'done');
+      if (activeTasksOfProj.length > 0) {
+        const taskToFinish = activeTasksOfProj[Math.floor(Math.random() * activeTasksOfProj.length)];
+        await fetch(`/api/tasks/${taskToFinish.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'done' })
+        });
+      }
+
+      await refreshData();
+    } catch (error) {
+      console.error('Error simulating commit activity:', error);
     }
   };
 
@@ -328,6 +243,18 @@ export default function App() {
       setActiveTab('kanban');
     }
   };
+
+  if (loading) {
+    return (
+      <div id="loading-viewport" className="flex h-screen w-screen bg-[#09090b] items-center justify-center text-neutral-400 font-mono text-xs select-none">
+        <div id="loading-spinner-box" className="flex flex-col items-center gap-3">
+          <div id="loading-spinner" className="h-6 w-6 rounded-full border-2 border-neutral-800 border-t-white animate-spin"></div>
+          <span id="loading-text" className="tracking-wider uppercase">Loading Workspace Context...</span>
+        </div>
+      </div>
+    );
+  }
+
 
   // Determine current view title
   const viewTitles: Record<string, { title: string; subtitle: string }> = {
