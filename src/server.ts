@@ -24,6 +24,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json());
 
 // ─── Session Middleware ─────────────────────────────────────────────────────
@@ -838,4 +839,9 @@ async function startServer() {
   });
 }
 
-startServer();
+export default app;
+
+// Vercel runs the Express app via api/index.ts; only start a standalone server locally.
+if (!process.env.VERCEL) {
+  startServer();
+}

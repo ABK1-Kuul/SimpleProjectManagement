@@ -5,6 +5,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@supabase/supabase-js";
+import session from "express-session";
+import bcrypt from "bcryptjs";
 
 // src/mockData.ts
 var INITIAL_TEAM_MEMBERS = [
@@ -333,7 +335,20 @@ dotenv.config();
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 var app = express();
+app.set("trust proxy", 1);
 app.use(express.json());
+var SESSION_SECRET = process.env.SESSION_SECRET || "devsync_fallback_secret_change_me";
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 1e3 * 60 * 60 * 24 * 7
+    // 7 days
+  }
+}));
 var supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 var supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_KEY;
 var isSupabaseConfigured = supabaseUrl && supabaseKey && !supabaseUrl.includes("your-project-id") && !supabaseKey.includes("your-supabase-service-role-key") && supabaseUrl !== "MY_SUPABASE_URL" && supabaseKey !== "MY_SUPABASE_KEY";
@@ -348,6 +363,26 @@ var localTasks = [...INITIAL_TASKS];
 var localTeamMembers = [...INITIAL_TEAM_MEMBERS];
 var localActivities = [...INITIAL_ACTIVITIES];
 var localMilestones = [...INITIAL_MILESTONES];
+var FALLBACK_USERS = [
+  {
+    id: "u-1",
+    username: "abdselam",
+    displayName: "Abdselam",
+    email: "abdselam@devsync.app",
+    role: "admin",
+    avatar: "AB",
+    passwordHash: bcrypt.hashSync("DevSync@Abs2024!", 12)
+  },
+  {
+    id: "u-2",
+    username: "bereket",
+    displayName: "Bereket",
+    email: "bereket@devsync.app",
+    role: "admin",
+    avatar: "BE",
+    passwordHash: bcrypt.hashSync("DevSync@Ber2024!", 12)
+  }
+];
 function mapProjectFromDb(p) {
   return {
     id: p.id,
@@ -456,6 +491,22 @@ function mapMilestoneToDb(m) {
   if (m.progress !== void 0) db.progress = m.progress;
   return db;
 }
+function mapUserFromDb(u) {
+  return {
+    id: u.id,
+    username: u.username,
+    displayName: u.display_name,
+    email: u.email,
+    role: u.role,
+    avatar: u.avatar
+  };
+}
+function requireAuth(req, res, next) {
+  if (req.session && req.session.user) {
+    return next();
+  }
+  return res.status(401).json({ error: "Unauthorized. Please log in." });
+}
 async function recalculateProjectProgress(projectId) {
   if (supabase) {
     const { data: dbTasks, error } = await supabase.from("tasks").select("*").eq("project_id", projectId);
@@ -486,7 +537,77 @@ async function recalculateProjectProgress(projectId) {
     );
   }
 }
-app.get("/api/team", async (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: "Username and password are required." });
+    }
+    let userRecord = null;
+    if (supabase) {
+      const { data, error } = await supabase.from("app_users").select("*").eq("username", username.toLowerCase().trim()).single();
+      if (error) {
+        const found = FALLBACK_USERS.find((u) => u.username === username.toLowerCase().trim());
+        if (!found) {
+          return res.status(401).json({ error: "Invalid username or password." });
+        }
+        userRecord = found;
+      } else if (!data) {
+        return res.status(401).json({ error: "Invalid username or password." });
+      } else {
+        userRecord = {
+          ...mapUserFromDb(data),
+          passwordHash: data.password_hash
+        };
+      }
+    } else {
+      const found = FALLBACK_USERS.find((u) => u.username === username.toLowerCase().trim());
+      if (!found) {
+        return res.status(401).json({ error: "Invalid username or password." });
+      }
+      userRecord = found;
+    }
+    const isValid = await bcrypt.compare(password, userRecord.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: "Invalid username or password." });
+    }
+    const safeUser = {
+      id: userRecord.id,
+      username: userRecord.username,
+      displayName: userRecord.displayName,
+      email: userRecord.email,
+      role: userRecord.role,
+      avatar: userRecord.avatar
+    };
+    req.session.user = safeUser;
+    req.session.save((err) => {
+      if (err) {
+        console.error("Session save error:", err);
+        return res.status(500).json({ error: "Failed to create session." });
+      }
+      return res.json({ user: safeUser });
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/auth/me", (req, res) => {
+  if (req.session && req.session.user) {
+    return res.json({ user: req.session.user });
+  }
+  return res.status(401).json({ error: "Not authenticated." });
+});
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      return res.status(500).json({ error: "Failed to destroy session." });
+    }
+    res.clearCookie("connect.sid");
+    return res.json({ message: "Logged out successfully." });
+  });
+});
+app.get("/api/team", requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from("team_members").select("*");
@@ -499,7 +620,7 @@ app.get("/api/team", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.get("/api/projects", async (req, res) => {
+app.get("/api/projects", requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from("projects").select("*");
@@ -512,7 +633,7 @@ app.get("/api/projects", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.post("/api/projects", async (req, res) => {
+app.post("/api/projects", requireAuth, async (req, res) => {
   try {
     const { name, description, category, repository, activeSprint } = req.body;
     const newId = `p-${Date.now()}`;
@@ -525,7 +646,6 @@ app.post("/api/projects", async (req, res) => {
       category,
       repository,
       issuesCount: 2,
-      // starts with 2 boilerplate tasks
       openIssues: 2,
       lastUpdated: "Just now",
       teamIds: ["1", "2"]
@@ -562,10 +682,11 @@ app.post("/api/projects", async (req, res) => {
       status: "pending",
       progress: 0
     };
+    const sessionUser = req.session.user;
     const newActivity = {
       id: `act-${Date.now()}`,
-      user: "Elena Rostova",
-      avatar: "ER",
+      user: sessionUser.displayName,
+      avatar: sessionUser.avatar,
       action: "initialized repository context",
       target: repository,
       timestamp: "Just now",
@@ -592,7 +713,7 @@ app.post("/api/projects", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.get("/api/tasks", async (req, res) => {
+app.get("/api/tasks", requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from("tasks").select("*");
@@ -605,7 +726,7 @@ app.get("/api/tasks", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.post("/api/tasks", async (req, res) => {
+app.post("/api/tasks", requireAuth, async (req, res) => {
   try {
     const { title, description, priority, projectId, assigneeId, dueDate, tags } = req.body;
     const newId = `t-${Date.now()}`;
@@ -692,7 +813,7 @@ app.post("/api/tasks", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.patch("/api/tasks/:id", async (req, res) => {
+app.patch("/api/tasks/:id", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { status, assigneeId } = req.body;
@@ -803,7 +924,7 @@ app.patch("/api/tasks/:id", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.get("/api/activities", async (req, res) => {
+app.get("/api/activities", requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from("activities").select("*").order("created_at", { ascending: false }).limit(50);
@@ -816,7 +937,7 @@ app.get("/api/activities", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.post("/api/activities", async (req, res) => {
+app.post("/api/activities", requireAuth, async (req, res) => {
   try {
     const { user, avatar, action, target, type } = req.body;
     const newId = `act-sim-${Date.now()}`;
@@ -841,7 +962,7 @@ app.post("/api/activities", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.get("/api/milestones", async (req, res) => {
+app.get("/api/milestones", requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from("milestones").select("*");
@@ -876,4 +997,10 @@ async function startServer() {
     console.log(`Backend: Server is running on http://localhost:${port}`);
   });
 }
-startServer();
+var server_default = app;
+if (!process.env.VERCEL) {
+  startServer();
+}
+export {
+  server_default as default
+};
