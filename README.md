@@ -1,20 +1,71 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Simple Project Management App
 
-# Run and deploy your AI Studio app
+## Overview
+A lightweight project management web application built with Vite, TypeScript, and Express. It uses Supabase as the backend database for storing projects, tasks, milestones, activities, and team members.
 
-This contains everything you need to run your app locally.
+## Features
+- Create, edit, delete projects and tasks
+- Track progress with milestones and activities
+- Real‑time updates via REST APIs
+- Fully configurable via environment variables
 
-View your app in AI Studio: https://ai.studio/apps/878d930e-d6be-4e36-af1c-e6f56d892253
+## Prerequisites
+- **Node.js** (v18 or later)
+- **npm** (comes with Node)
+- A **Supabase** account and project
 
-## Run Locally
+## Setup
+1. **Clone the repository**
+   ```bash
+   git clone <repo-url>
+   cd SimpleProjectManagement
+   ```
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+3. **Configure Supabase**
+   - Create a new project in Supabase.
+   - Run the schema file to set up tables:
+     ```bash
+     supabase db reset --file supabase_schema.sql
+     ```
+   - Copy `.env.example` to `.env` and fill in the values:
+     ```
+     SUPABASE_URL=your-supabase-url
+     SUPABASE_ANON_KEY=your-anon-key
+     SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+     ```
+4. **Run the development server**
+   ```bash
+   npm run dev
+   ```
+   The app will be available at `http://localhost:5173`.
 
-**Prerequisites:**  Node.js
+## Build for Production
+```bash
+npm run build
+# Then start the server
+npm start
+```
 
+## Database Schema
+The Supabase schema is defined in `supabase_schema.sql`. It includes tables for:
+- `projects`
+- `tasks`
+- `milestones`
+- `activities`
+- `team_members`
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Environment Variables
+| Variable | Description |
+|---|---|
+| `SUPABASE_URL` | URL of your Supabase project |
+| `SUPABASE_ANON_KEY` | Public anonymous key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key for server‑side operations |
+
+## Contributing
+Feel free to open issues or submit pull requests. For major changes, please open an issue first to discuss what you would like to change.
+
+## License
+MIT License
