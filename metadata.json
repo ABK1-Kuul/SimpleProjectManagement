@@ -1,0 +1,6 @@
+{
+  "name": "Agile Project Tracker",
+  "description": "An ultra-minimalist, high-density dashboard for tracking software projects, tasks, team workloads, and live milestones with a Vercel-inspired dark theme.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
