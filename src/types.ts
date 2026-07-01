@@ -58,3 +58,13 @@ export interface Milestone {
   status: 'pending' | 'completed' | 'delayed';
   progress: number;
 }
+
+/** Authenticated application user */
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string;
+  role: string;
+  avatar: string;
+}

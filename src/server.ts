@@ -1,18 +1,20 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
+import session from 'express-session';
+import bcrypt from 'bcryptjs';
 
 // Types
-import { Project, Task, TeamMember, Activity, Milestone, TaskStatus, TaskPriority, ProjectCategory } from './types';
-import { 
-  INITIAL_PROJECTS, 
-  INITIAL_TASKS, 
-  INITIAL_TEAM_MEMBERS, 
-  INITIAL_ACTIVITIES, 
-  INITIAL_MILESTONES 
+import { Project, Task, TeamMember, Activity, Milestone, AuthUser, TaskStatus, TaskPriority, ProjectCategory } from './types';
+import {
+  INITIAL_PROJECTS,
+  INITIAL_TASKS,
+  INITIAL_TEAM_MEMBERS,
+  INITIAL_ACTIVITIES,
+  INITIAL_MILESTONES
 } from './mockData';
 
 // Load env vars
@@ -24,12 +26,33 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// Initialize Supabase if credentials are present
+// ─── Session Middleware ─────────────────────────────────────────────────────
+const SESSION_SECRET = process.env.SESSION_SECRET || 'devsync_fallback_secret_change_me';
+
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 1000 * 60 * 60 * 24 * 7  // 7 days
+  }
+}));
+
+// Extend express-session types
+declare module 'express-session' {
+  interface SessionData {
+    user: AuthUser;
+  }
+}
+
+// ─── Supabase Client ────────────────────────────────────────────────────────
 const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_KEY;
 
-const isSupabaseConfigured = supabaseUrl && supabaseKey && 
-                             !supabaseUrl.includes('your-project-id') && 
+const isSupabaseConfigured = supabaseUrl && supabaseKey &&
+                             !supabaseUrl.includes('your-project-id') &&
                              !supabaseKey.includes('your-supabase-service-role-key') &&
                              supabaseUrl !== 'MY_SUPABASE_URL' &&
                              supabaseKey !== 'MY_SUPABASE_KEY';
@@ -42,14 +65,36 @@ if (isSupabaseConfigured) {
   console.warn('Backend: Supabase credentials not set or invalid in env. Using in-memory fallback database.');
 }
 
-// In-memory fallback database state
+// ─── In-Memory Fallback ─────────────────────────────────────────────────────
 let localProjects = [...INITIAL_PROJECTS];
 let localTasks = [...INITIAL_TASKS];
 let localTeamMembers = [...INITIAL_TEAM_MEMBERS];
 let localActivities = [...INITIAL_ACTIVITIES];
 let localMilestones = [...INITIAL_MILESTONES];
 
-// Mapping helpers (from database snake_case to frontend camelCase)
+// Fallback users when Supabase is not configured — passwords are pre-hashed
+const FALLBACK_USERS: (AuthUser & { passwordHash: string })[] = [
+  {
+    id: 'u-1',
+    username: 'abdselam',
+    displayName: 'Abdselam',
+    email: 'abdselam@devsync.app',
+    role: 'admin',
+    avatar: 'AB',
+    passwordHash: bcrypt.hashSync('DevSync@Abs2024!', 12)
+  },
+  {
+    id: 'u-2',
+    username: 'bereket',
+    displayName: 'Bereket',
+    email: 'bereket@devsync.app',
+    role: 'admin',
+    avatar: 'BE',
+    passwordHash: bcrypt.hashSync('DevSync@Ber2024!', 12)
+  }
+];
+
+// ─── Mapping Helpers ────────────────────────────────────────────────────────
 function mapProjectFromDb(p: any): Project {
   return {
     id: p.id,
@@ -167,7 +212,26 @@ function mapMilestoneToDb(m: Partial<Milestone>): any {
   return db;
 }
 
-// Progress recalculation engine
+function mapUserFromDb(u: any): AuthUser {
+  return {
+    id: u.id,
+    username: u.username,
+    displayName: u.display_name,
+    email: u.email,
+    role: u.role,
+    avatar: u.avatar
+  };
+}
+
+// ─── Auth Middleware ────────────────────────────────────────────────────────
+function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (req.session && req.session.user) {
+    return next();
+  }
+  return res.status(401).json({ error: 'Unauthorized. Please log in.' });
+}
+
+// ─── Progress Recalculation ─────────────────────────────────────────────────
 async function recalculateProjectProgress(projectId: string) {
   if (supabase) {
     const { data: dbTasks, error } = await supabase
@@ -186,7 +250,6 @@ async function recalculateProjectProgress(projectId: string) {
       .update({ progress, last_updated: 'Just now' })
       .eq('id', projectId);
 
-    // Update milestones progress
     const { data: dbMilestones } = await supabase
       .from('milestones')
       .select('*')
@@ -204,26 +267,124 @@ async function recalculateProjectProgress(projectId: string) {
       }
     }
   } else {
-    // In-memory recalculations
     const projectTasks = localTasks.filter(t => t.projectId === projectId);
     const totalCount = projectTasks.length;
     const completedCount = projectTasks.filter(t => t.status === 'done').length;
     const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
-    localProjects = localProjects.map(p => 
+    localProjects = localProjects.map(p =>
       p.id === projectId ? { ...p, progress, lastUpdated: 'Just now' } : p
     );
 
-    localMilestones = localMilestones.map(m => 
+    localMilestones = localMilestones.map(m =>
       m.projectId === projectId ? { ...m, progress, status: progress === 100 ? 'completed' : m.status } : m
     );
   }
 }
 
-// --- REST API ENDPOINTS ---
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTH ENDPOINTS (public – no requireAuth)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// POST /api/auth/login
+app.post('/api/auth/login', async (req: Request, res: Response) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required.' });
+    }
+
+    let userRecord: (AuthUser & { passwordHash: string }) | null = null;
+
+    if (supabase) {
+      // Fetch user from Supabase
+      const { data, error } = await supabase
+        .from('app_users')
+        .select('*')
+        .eq('username', username.toLowerCase().trim())
+        .single();
+
+      if (error) {
+        // Table may not exist yet — fall back to in-memory users
+        const found = FALLBACK_USERS.find(u => u.username === username.toLowerCase().trim());
+        if (!found) {
+          return res.status(401).json({ error: 'Invalid username or password.' });
+        }
+        userRecord = found;
+      } else if (!data) {
+        return res.status(401).json({ error: 'Invalid username or password.' });
+      } else {
+        userRecord = {
+          ...mapUserFromDb(data),
+          passwordHash: data.password_hash
+        };
+      }
+    } else {
+      // Fallback: use in-memory users
+      const found = FALLBACK_USERS.find(u => u.username === username.toLowerCase().trim());
+      if (!found) {
+        return res.status(401).json({ error: 'Invalid username or password.' });
+      }
+      userRecord = found;
+    }
+
+    // Verify password
+    const isValid = await bcrypt.compare(password, userRecord.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid username or password.' });
+    }
+
+    // Build safe user object (no hash)
+    const safeUser: AuthUser = {
+      id: userRecord.id,
+      username: userRecord.username,
+      displayName: userRecord.displayName,
+      email: userRecord.email,
+      role: userRecord.role,
+      avatar: userRecord.avatar
+    };
+
+    // Store in session
+    req.session.user = safeUser;
+    req.session.save((err) => {
+      if (err) {
+        console.error('Session save error:', err);
+        return res.status(500).json({ error: 'Failed to create session.' });
+      }
+      return res.json({ user: safeUser });
+    });
+  } catch (err: any) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/auth/me – returns current session user
+app.get('/api/auth/me', (req: Request, res: Response) => {
+  if (req.session && req.session.user) {
+    return res.json({ user: req.session.user });
+  }
+  return res.status(401).json({ error: 'Not authenticated.' });
+});
+
+// POST /api/auth/logout
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  req.session.destroy((err) => {
+    if (err) {
+      return res.status(500).json({ error: 'Failed to destroy session.' });
+    }
+    res.clearCookie('connect.sid');
+    return res.json({ message: 'Logged out successfully.' });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROTECTED API ROUTES (all require active session)
+// ═══════════════════════════════════════════════════════════════════════════
 
 // 1. Team Members API
-app.get('/api/team', async (req, res) => {
+app.get('/api/team', requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from('team_members').select('*');
@@ -238,7 +399,7 @@ app.get('/api/team', async (req, res) => {
 });
 
 // 2. Projects API
-app.get('/api/projects', async (req, res) => {
+app.get('/api/projects', requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from('projects').select('*');
@@ -252,7 +413,7 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
-app.post('/api/projects', async (req, res) => {
+app.post('/api/projects', requireAuth, async (req, res) => {
   try {
     const { name, description, category, repository, activeSprint } = req.body;
     const newId = `p-${Date.now()}`;
@@ -264,7 +425,7 @@ app.post('/api/projects', async (req, res) => {
       activeSprint,
       category,
       repository,
-      issuesCount: 2, // starts with 2 boilerplate tasks
+      issuesCount: 2,
       openIssues: 2,
       lastUpdated: 'Just now',
       teamIds: ['1', '2']
@@ -304,10 +465,11 @@ app.post('/api/projects', async (req, res) => {
       progress: 0
     };
 
+    const sessionUser = req.session.user!;
     const newActivity: Activity = {
       id: `act-${Date.now()}`,
-      user: 'Elena Rostova',
-      avatar: 'ER',
+      user: sessionUser.displayName,
+      avatar: sessionUser.avatar,
       action: 'initialized repository context',
       target: repository,
       timestamp: 'Just now',
@@ -341,7 +503,7 @@ app.post('/api/projects', async (req, res) => {
 });
 
 // 3. Tasks API
-app.get('/api/tasks', async (req, res) => {
+app.get('/api/tasks', requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from('tasks').select('*');
@@ -355,7 +517,7 @@ app.get('/api/tasks', async (req, res) => {
   }
 });
 
-app.post('/api/tasks', async (req, res) => {
+app.post('/api/tasks', requireAuth, async (req, res) => {
   try {
     const { title, description, priority, projectId, assigneeId, dueDate, tags } = req.body;
     const newId = `t-${Date.now()}`;
@@ -454,7 +616,7 @@ app.post('/api/tasks', async (req, res) => {
   }
 });
 
-app.patch('/api/tasks/:id', async (req, res) => {
+app.patch('/api/tasks/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { status, assigneeId } = req.body;
@@ -589,7 +751,7 @@ app.patch('/api/tasks/:id', async (req, res) => {
 });
 
 // 4. Activities API
-app.get('/api/activities', async (req, res) => {
+app.get('/api/activities', requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase
@@ -607,7 +769,7 @@ app.get('/api/activities', async (req, res) => {
   }
 });
 
-app.post('/api/activities', async (req, res) => {
+app.post('/api/activities', requireAuth, async (req, res) => {
   try {
     const { user, avatar, action, target, type } = req.body;
     const newId = `act-sim-${Date.now()}`;
@@ -635,7 +797,7 @@ app.post('/api/activities', async (req, res) => {
 });
 
 // 5. Milestones API
-app.get('/api/milestones', async (req, res) => {
+app.get('/api/milestones', requireAuth, async (req, res) => {
   try {
     if (supabase) {
       const { data, error } = await supabase.from('milestones').select('*');
@@ -649,24 +811,20 @@ app.get('/api/milestones', async (req, res) => {
   }
 });
 
-
-// --- INTEGRATING VITE DEV SERVER OR STATIC SERVING ---
-
+// ─── Vite Dev Server / Static Serving ──────────────────────────────────────
 async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
   const port = parseInt(process.env.PORT || '3000', 10);
 
   if (!isProduction) {
-    // Vite Dev Server middleware mode
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
-    
+
     app.use(vite.middlewares);
     console.log('Backend: Vite dev server mounted in middleware mode.');
   } else {
-    // Serve production static assets from dist
     const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {

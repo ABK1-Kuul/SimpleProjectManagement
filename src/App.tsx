@@ -14,10 +14,15 @@ import TeamView from './components/TeamView';
 import NewProjectModal from './components/NewProjectModal';
 import NewTaskModal from './components/NewTaskModal';
 import CommandMenu from './components/CommandMenu';
+import LoginPage from './components/LoginPage';
+import { AuthProvider, useAuth } from './context/AuthContext';
 
 import { Project, Task, TeamMember, Activity, Milestone, TaskStatus, TaskPriority, ProjectCategory } from './types';
 
-export default function App() {
+// ─── Inner workspace that is only rendered after login ────────────────────────
+function Workspace() {
+  const { user, loading: authLoading } = useAuth();
+
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -26,23 +31,19 @@ export default function App() {
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Filter or navigation context state
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-
-  // Modal visual states
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isCommandMenuOpen, setIsCommandMenuOpen] = useState(false);
 
-  // Retrieve and refresh workspace data from backend
   const refreshData = async () => {
     try {
       const [projectsRes, tasksRes, teamRes, activitiesRes, milestonesRes] = await Promise.all([
-        fetch('/api/projects'),
-        fetch('/api/tasks'),
-        fetch('/api/team'),
-        fetch('/api/activities'),
-        fetch('/api/milestones')
+        fetch('/api/projects', { credentials: 'include' }),
+        fetch('/api/tasks', { credentials: 'include' }),
+        fetch('/api/team', { credentials: 'include' }),
+        fetch('/api/activities', { credentials: 'include' }),
+        fetch('/api/milestones', { credentials: 'include' })
       ]);
 
       if (!projectsRes.ok || !tasksRes.ok || !teamRes.ok || !activitiesRes.ok || !milestonesRes.ok) {
@@ -69,7 +70,6 @@ export default function App() {
     }
   };
 
-  // Keyboard shortcut listener for Command Menu (⌘K)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -81,15 +81,16 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Initial load
   useEffect(() => {
-    refreshData();
-  }, []);
+    if (user) {
+      refreshData();
+    }
+  }, [user]);
 
-  // Update Task Status
+  // ─── Handlers ──────────────────────────────────────────────────────────────
+
   const handleUpdateTaskStatus = async (taskId: string, newStatus: TaskStatus) => {
     try {
-      // Optimistic update for fluid drag-and-drop feedback
       setTasks((prevTasks) =>
         prevTasks.map((task) => (task.id === taskId ? { ...task, status: newStatus } : task))
       );
@@ -97,20 +98,18 @@ export default function App() {
       const res = await fetch(`/api/tasks/${taskId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ status: newStatus })
       });
 
       if (!res.ok) throw new Error('API refused task status change');
-
-      // Refresh in background to sync calculated progress
       await refreshData();
     } catch (error) {
       console.error('Failed to update task status:', error);
-      refreshData(); // Revert to source of truth
+      refreshData();
     }
   };
 
-  // Reassign task
   const handleReassignTask = async (taskId: string, newAssigneeId: string) => {
     try {
       setTasks((prevTasks) =>
@@ -120,11 +119,11 @@ export default function App() {
       const res = await fetch(`/api/tasks/${taskId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ assigneeId: newAssigneeId })
       });
 
       if (!res.ok) throw new Error('API refused task reassignment');
-
       await refreshData();
     } catch (error) {
       console.error('Failed to reassign task assignee:', error);
@@ -132,7 +131,6 @@ export default function App() {
     }
   };
 
-  // Create Project Callback
   const handleCreateProject = async (newProjData: {
     name: string;
     description: string;
@@ -144,11 +142,11 @@ export default function App() {
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(newProjData)
       });
 
       if (!res.ok) throw new Error('Failed to create project on server');
-
       await refreshData();
       setActiveTab('dashboard');
     } catch (error) {
@@ -156,7 +154,6 @@ export default function App() {
     }
   };
 
-  // Create Task Callback
   const handleCreateTask = async (newTaskData: {
     title: string;
     description: string;
@@ -170,18 +167,17 @@ export default function App() {
       const res = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(newTaskData)
       });
 
       if (!res.ok) throw new Error('Failed to create task on server');
-
       await refreshData();
     } catch (error) {
       console.error('Error creating task:', error);
     }
   };
 
-  // Simulate developer action callback
   const handleSimulateCommit = async () => {
     if (teamMembers.length === 0 || projects.length === 0) return;
 
@@ -195,13 +191,14 @@ export default function App() {
       { text: 'optimized memory index lookup latency for', type: 'commit' as const },
       { text: 'integrated Tailwind variables configuration on', type: 'task' as const }
     ];
-    
+
     const chosenAction = commitActions[Math.floor(Math.random() * commitActions.length)];
 
     try {
       const res = await fetch('/api/activities', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           user: randomDev.name,
           avatar: randomDev.avatar,
@@ -213,13 +210,13 @@ export default function App() {
 
       if (!res.ok) throw new Error('Failed to log activity simulation');
 
-      // Shift one random task to "done"
       const activeTasksOfProj = tasks.filter(t => t.projectId === randomProj.id && t.status !== 'done');
       if (activeTasksOfProj.length > 0) {
         const taskToFinish = activeTasksOfProj[Math.floor(Math.random() * activeTasksOfProj.length)];
         await fetch(`/api/tasks/${taskToFinish.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ status: 'done' })
         });
       }
@@ -230,7 +227,6 @@ export default function App() {
     }
   };
 
-  // Navigation handlers from dashboard cards or command menu
   const handleSelectProject = (projId: string) => {
     setSelectedProjectId(projId);
     setActiveTab('kanban');
@@ -244,6 +240,24 @@ export default function App() {
     }
   };
 
+  // ─── Auth-loading screen ────────────────────────────────────────────────────
+  if (authLoading) {
+    return (
+      <div id="auth-loading-viewport" className="flex h-screen w-screen bg-[#09090b] items-center justify-center text-neutral-400 font-mono text-xs select-none">
+        <div id="auth-loading-box" className="flex flex-col items-center gap-3">
+          <div id="auth-loading-spinner" className="h-6 w-6 rounded-full border-2 border-neutral-800 border-t-indigo-500 animate-spin"></div>
+          <span id="auth-loading-text" className="tracking-wider uppercase">Authenticating...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Login gate ─────────────────────────────────────────────────────────────
+  if (!user) {
+    return <LoginPage />;
+  }
+
+  // ─── Data loading screen ────────────────────────────────────────────────────
   if (loading) {
     return (
       <div id="loading-viewport" className="flex h-screen w-screen bg-[#09090b] items-center justify-center text-neutral-400 font-mono text-xs select-none">
@@ -255,8 +269,7 @@ export default function App() {
     );
   }
 
-
-  // Determine current view title
+  // ─── View titles ─────────────────────────────────────────────────────────────
   const viewTitles: Record<string, { title: string; subtitle: string }> = {
     dashboard: { title: 'DASHBOARD OVERVIEW', subtitle: 'Global metrics & projects' },
     kanban: { title: 'KANBAN AGIL BOARD', subtitle: 'Work coordination pipeline' },
@@ -269,18 +282,18 @@ export default function App() {
   return (
     <div id="app-viewport-wrapper" className="flex h-screen w-screen bg-[#09090b] text-neutral-300 font-sans overflow-hidden select-none">
       {/* Sidebar Navigation */}
-      <Sidebar 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
+      <Sidebar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
         projectCount={projects.length}
         taskCount={tasks.filter(t => t.status !== 'done').length}
       />
 
       {/* Main Workspace Frame */}
       <div id="main-workspace-frame" className="flex-1 flex flex-col min-w-0 bg-[#09090b]">
-        
+
         {/* Global Toolbar Header */}
-        <Header 
+        <Header
           title={currentMeta.title}
           subtitle={currentMeta.subtitle}
           onOpenSearch={() => setIsCommandMenuOpen(true)}
@@ -300,7 +313,7 @@ export default function App() {
               className="flex-1 flex flex-col min-h-0 overflow-hidden"
             >
               {activeTab === 'dashboard' && (
-                <DashboardView 
+                <DashboardView
                   projects={projects}
                   tasks={tasks}
                   teamMembers={teamMembers}
@@ -311,7 +324,7 @@ export default function App() {
               )}
 
               {activeTab === 'kanban' && (
-                <KanbanView 
+                <KanbanView
                   projects={projects}
                   tasks={tasks}
                   teamMembers={teamMembers}
@@ -323,7 +336,7 @@ export default function App() {
               )}
 
               {activeTab === 'analytics' && (
-                <AnalyticsView 
+                <AnalyticsView
                   projects={projects}
                   activities={activities}
                   milestones={milestones}
@@ -331,7 +344,7 @@ export default function App() {
               )}
 
               {activeTab === 'team' && (
-                <TeamView 
+                <TeamView
                   teamMembers={teamMembers}
                   tasks={tasks}
                   projects={projects}
@@ -344,13 +357,13 @@ export default function App() {
       </div>
 
       {/* Modals & Overlays */}
-      <NewProjectModal 
+      <NewProjectModal
         isOpen={isProjectModalOpen}
         onClose={() => setIsProjectModalOpen(false)}
         onCreate={handleCreateProject}
       />
 
-      <NewTaskModal 
+      <NewTaskModal
         isOpen={isTaskModalOpen}
         onClose={() => setIsTaskModalOpen(false)}
         projects={projects}
@@ -358,7 +371,7 @@ export default function App() {
         onCreate={handleCreateTask}
       />
 
-      <CommandMenu 
+      <CommandMenu
         isOpen={isCommandMenuOpen}
         onClose={() => setIsCommandMenuOpen(false)}
         projects={projects}
@@ -367,5 +380,14 @@ export default function App() {
         onSelectTask={handleSelectTask}
       />
     </div>
+  );
+}
+
+// ─── Root with Auth Provider ──────────────────────────────────────────────────
+export default function App() {
+  return (
+    <AuthProvider>
+      <Workspace />
+    </AuthProvider>
   );
 }

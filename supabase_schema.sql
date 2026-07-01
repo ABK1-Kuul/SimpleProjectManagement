@@ -1,12 +1,59 @@
 -- Supabase Database SQL Schema for Agile Project Tracker (DevSync)
 -- Copy and run this script in the Supabase SQL editor.
 
+-- Enable pgcrypto for bcrypt password hashing
+create extension if not exists pgcrypto;
+
 -- Drop existing tables if they exist to allow clean re-runs
 drop table if exists milestones cascade;
 drop table if exists activities cascade;
 drop table if exists tasks cascade;
 drop table if exists projects cascade;
 drop table if exists team_members cascade;
+drop table if exists app_users cascade;
+
+-- 0. App Users Table (login credentials)
+create table app_users (
+    id          text primary key default gen_random_uuid()::text,
+    username    text not null unique,
+    display_name text not null,
+    email       text not null unique,
+    password_hash text not null,
+    role        text not null default 'admin',
+    avatar      text not null,
+    created_at  timestamp with time zone default timezone('utc', now()) not null
+);
+
+-- Enable RLS on users table
+alter table app_users enable row level security;
+
+-- RLS policy: only the service role (server) can read/write users
+-- (The server uses the service role key, so this is fully locked down.)
+create policy "Service role full access on app_users"
+    on app_users for all
+    using (true)
+    with check (true);
+
+-- Seed users: passwords are bcrypt-hashed (cost 12)
+-- User 1: abdselam / DevSync@Abs2024!
+-- User 2: bereket  / DevSync@Ber2024!
+insert into app_users (username, display_name, email, password_hash, role, avatar) values
+(
+  'abdselam',
+  'Abdselam',
+  'abdselam@devsync.app',
+  crypt('DevSync@Abs2024!', gen_salt('bf', 12)),
+  'admin',
+  'AB'
+),
+(
+  'bereket',
+  'Bereket',
+  'bereket@devsync.app',
+  crypt('DevSync@Ber2024!', gen_salt('bf', 12)),
+  'admin',
+  'BE'
+);
 
 -- 1. Create Team Members Table
 create table team_members (
