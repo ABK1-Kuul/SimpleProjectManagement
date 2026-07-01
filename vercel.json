@@ -1,8 +1,8 @@
 {
   "buildCommand": "vite build && esbuild src/vercelApi.ts --bundle --platform=node --format=esm --outfile=api/index.js",
   "outputDirectory": "dist",
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/index.js" },
-    { "src": "/(.*)", "dest": "/index.html" }
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index.js" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
