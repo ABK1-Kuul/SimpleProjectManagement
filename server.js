@@ -3,8 +3,8 @@ import express from "express";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import session from "express-session";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
 // src/apiErrors.ts
 function sendError(res, status, body) {
@@ -474,6 +474,16 @@ var __dirname = path.dirname(__filename);
 var app = express();
 app.set("trust proxy", 1);
 app.use(express.json());
+app.use((req, _res, next) => {
+  const raw = req.headers.cookie || "";
+  const cookies = {};
+  raw.split(";").forEach((part) => {
+    const [k, ...v] = part.trim().split("=");
+    if (k) cookies[k.trim()] = decodeURIComponent(v.join("="));
+  });
+  req.cookies = cookies;
+  next();
+});
 if (process.env.VERCEL) {
   app.use((req, _res, next) => {
     const originalUrl = req.headers["x-vercel-original-url"] ?? req.headers["x-forwarded-uri"];
@@ -483,19 +493,33 @@ if (process.env.VERCEL) {
     next();
   });
 }
-var SESSION_SECRET = process.env.SESSION_SECRET || "devsync_fallback_secret_change_me";
-app.use(session({
-  secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: 1e3 * 60 * 60 * 24 * 7
-    // 7 days
+var JWT_SECRET = process.env.SESSION_SECRET || "devsync_fallback_secret_change_me";
+var JWT_COOKIE = "ds_token";
+var IS_PROD = process.env.NODE_ENV === "production";
+function signToken(user) {
+  return jwt.sign({ user }, JWT_SECRET, { expiresIn: "7d" });
+}
+function verifyToken(token) {
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    return payload.user ?? null;
+  } catch {
+    return null;
   }
-}));
+}
+function setAuthCookie(res, token) {
+  const maxAge = 60 * 60 * 24 * 7;
+  res.setHeader(
+    "Set-Cookie",
+    `${JWT_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax${IS_PROD ? "; Secure" : ""}`
+  );
+}
+function clearAuthCookie(res) {
+  res.setHeader(
+    "Set-Cookie",
+    `${JWT_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax${IS_PROD ? "; Secure" : ""}`
+  );
+}
 var { client: supabase, status: initialSupabaseStatus } = createSupabaseClient();
 var supabaseStatus = initialSupabaseStatus;
 if (supabaseStatus.mode === "memory") {
@@ -656,10 +680,16 @@ function mapUserFromDb(u) {
   };
 }
 function requireAuth(req, res, next) {
-  if (req.session && req.session.user) {
-    return next();
+  const token = req.cookies?.[JWT_COOKIE];
+  if (!token) {
+    return res.status(401).json({ error: "Unauthorized. Please log in." });
   }
-  return res.status(401).json({ error: "Unauthorized. Please log in." });
+  const user = verifyToken(token);
+  if (!user) {
+    return res.status(401).json({ error: "Session expired. Please log in again." });
+  }
+  req.authUser = user;
+  return next();
 }
 async function recalculateProjectProgress(projectId) {
   if (supabase) {
@@ -804,28 +834,11 @@ app.post("/api/auth/login", async (req, res) => {
       role: userRecord.role,
       avatar: userRecord.avatar
     };
-    if (!req.session) {
-      return sendError(res, 500, {
-        error: "Session is unavailable on the server.",
-        code: "SESSION_ERROR",
-        hint: "Set SESSION_SECRET in Vercel environment variables and redeploy."
-      });
-    }
-    req.session.user = safeUser;
-    req.session.save((err) => {
-      if (err) {
-        console.error("Session save error:", err);
-        return sendError(res, 500, {
-          error: "Login succeeded but the session could not be saved.",
-          code: "SESSION_ERROR",
-          hint: process.env.VERCEL ? "Vercel serverless uses in-memory sessions that may not persist between requests." : "Check SESSION_SECRET and server logs.",
-          details: getErrorMessage(err)
-        });
-      }
-      return res.json({
-        user: safeUser,
-        authMode: usedFallbackAuth || supabaseStatus.mode === "memory" ? "memory" : "supabase"
-      });
+    const token = signToken(safeUser);
+    setAuthCookie(res, token);
+    return res.json({
+      user: safeUser,
+      authMode: usedFallbackAuth || supabaseStatus.mode === "memory" ? "memory" : "supabase"
     });
   } catch (err) {
     console.error("Login error:", err);
@@ -838,38 +851,27 @@ app.post("/api/auth/login", async (req, res) => {
 });
 app.get("/api/auth/me", (req, res) => {
   try {
-    if (req.session?.user) {
-      return res.json({ user: req.session.user });
+    const token = req.cookies?.[JWT_COOKIE];
+    if (!token) {
+      return sendError(res, 401, { error: "Not authenticated.", code: "UNAUTHORIZED" });
     }
-    return sendError(res, 401, {
-      error: "Not authenticated.",
-      code: "UNAUTHORIZED"
-    });
+    const user = verifyToken(token);
+    if (!user) {
+      return sendError(res, 401, { error: "Session expired.", code: "UNAUTHORIZED" });
+    }
+    return res.json({ user });
   } catch (err) {
     console.error("/api/auth/me error:", err);
     return sendError(res, 500, {
       error: "Failed to read the current session.",
       code: "SESSION_ERROR",
-      hint: "Set SESSION_SECRET in Vercel and redeploy.",
       details: getErrorMessage(err)
     });
   }
 });
 app.post("/api/auth/logout", (req, res) => {
-  if (!req.session) {
-    return res.json({ message: "Logged out successfully." });
-  }
-  req.session.destroy((err) => {
-    if (err) {
-      return sendError(res, 500, {
-        error: "Failed to destroy session.",
-        code: "SESSION_ERROR",
-        details: getErrorMessage(err)
-      });
-    }
-    res.clearCookie("connect.sid");
-    return res.json({ message: "Logged out successfully." });
-  });
+  clearAuthCookie(res);
+  return res.json({ message: "Logged out successfully." });
 });
 app.get("/api/team", requireAuth, async (req, res) => {
   try {
@@ -946,7 +948,7 @@ app.post("/api/projects", requireAuth, async (req, res) => {
       status: "pending",
       progress: 0
     };
-    const sessionUser = req.session.user;
+    const sessionUser = req.authUser;
     const newActivity = {
       id: `act-${Date.now()}`,
       user: sessionUser.displayName,
