@@ -1,11 +1,9 @@
 {
-  "functions": {
-    "api/index.ts": {
-      "includeFiles": "src/**"
-    }
-  },
-  "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index.ts" },
-    { "source": "/(.*)", "destination": "/index.html" }
+  "buildCommand": "vite build && esbuild src/vercelApi.ts --bundle --platform=node --format=esm --outfile=api/index.js",
+  "outputDirectory": "dist",
+  "routes": [
+    { "src": "/assets/(.*)", "dest": "/assets/$1" },
+    { "src": "/api/(.*)", "dest": "/api/index.js" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
