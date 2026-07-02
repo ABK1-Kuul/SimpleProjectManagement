@@ -2,10 +2,9 @@
   "name": "react-example",
   "private": true,
   "version": "0.0.0",
-  "type": "module",
   "scripts": {
     "dev": "tsx src/apiServer.ts",
-    "build": "vite build && esbuild src/vercelApi.ts --bundle --platform=node --format=cjs --outfile=api/index.cjs",
+    "build": "vite build && esbuild src/vercelApi.ts --bundle --platform=node --format=cjs --outfile=api/index.js",
     "start": "node server.js",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js api/index.js",
