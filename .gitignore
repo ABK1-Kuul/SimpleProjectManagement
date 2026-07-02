@@ -9,3 +9,8 @@ coverage/
 .vercel
 api/index.js
 !api/index.ts
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
