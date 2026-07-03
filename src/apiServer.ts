@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import {
   sendError,
   getErrorMessage,
@@ -60,6 +61,12 @@ if (process.env.VERCEL) {
 const JWT_SECRET = process.env.SESSION_SECRET || 'devsync_fallback_secret_change_me';
 const JWT_COOKIE = 'ds_token';
 const IS_PROD = process.env.NODE_ENV === 'production';
+
+// Security: Validate JWT secret in production
+if (IS_PROD && JWT_SECRET === 'devsync_fallback_secret_change_me') {
+  console.error('FATAL: SESSION_SECRET is not set in production. Tokens can be forged!');
+  process.exit(1);
+}
 
 function signToken(user: AuthUser): string {
   return jwt.sign({ user }, JWT_SECRET, { expiresIn: '7d' });
@@ -359,8 +366,17 @@ function findFallbackUser(username: string) {
   return FALLBACK_USERS.find(u => u.username === username.toLowerCase().trim()) ?? null;
 }
 
+// Rate limiting for login endpoint (prevent brute force)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per window
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.', code: 'RATE_LIMIT_EXCEEDED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // POST /api/auth/login
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
   try {
     const { username, password } = req.body;
 
@@ -889,7 +905,185 @@ app.patch('/api/tasks/:id', requireAuth, async (req, res) => {
   }
 });
 
-// 4. Activities API
+// PUT /api/tasks/:id — full task edit
+app.put('/api/tasks/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, priority, assigneeId, dueDate, tags, status } = req.body;
+
+    if (supabase) {
+      const { data: existing, error: fErr } = await supabase.from('tasks').select('*').eq('id', id).single();
+      if (fErr || !existing) return res.status(404).json({ error: 'Task not found' });
+
+      const updates: any = {};
+      if (title !== undefined) updates.title = title;
+      if (description !== undefined) updates.description = description;
+      if (priority !== undefined) updates.priority = priority;
+      if (assigneeId !== undefined) updates.assignee_id = assigneeId || null;
+      if (dueDate !== undefined) updates.due_date = dueDate;
+      if (tags !== undefined) updates.tags = tags;
+      if (status !== undefined) updates.status = status;
+
+      const { data: updated, error: uErr } = await supabase.from('tasks').update(updates).eq('id', id).select('*').single();
+      if (uErr || !updated) throw uErr;
+
+      const authUser: AuthUser = (req as any).authUser;
+      const act: Activity = {
+        id: `act-${Date.now()}`,
+        user: authUser.displayName,
+        avatar: authUser.avatar,
+        action: `updated task details for`,
+        target: updated.title.substring(0, 32),
+        timestamp: 'Just now',
+        type: 'task',
+      };
+      await supabase.from('activities').insert(mapActivityToDb(act));
+
+      return res.json(mapTaskFromDb(updated));
+    } else {
+      const idx = localTasks.findIndex(t => t.id === id);
+      if (idx === -1) return res.status(404).json({ error: 'Task not found' });
+
+      const updated: Task = {
+        ...localTasks[idx],
+        ...(title !== undefined && { title }),
+        ...(description !== undefined && { description }),
+        ...(priority !== undefined && { priority }),
+        ...(assigneeId !== undefined && { assigneeId }),
+        ...(dueDate !== undefined && { dueDate }),
+        ...(tags !== undefined && { tags }),
+        ...(status !== undefined && { status }),
+      };
+      localTasks[idx] = updated;
+
+      const authUser: AuthUser = (req as any).authUser;
+      localActivities = [{
+        id: `act-${Date.now()}`,
+        user: authUser.displayName,
+        avatar: authUser.avatar,
+        action: 'updated task details for',
+        target: updated.title.substring(0, 32),
+        timestamp: 'Just now',
+        type: 'task',
+      }, ...localActivities];
+
+      return res.json(updated);
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/tasks/:id
+app.delete('/api/tasks/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (supabase) {
+      const { data: existing, error: fErr } = await supabase.from('tasks').select('*').eq('id', id).single();
+      if (fErr || !existing) return res.status(404).json({ error: 'Task not found' });
+
+      const { error: dErr } = await supabase.from('tasks').delete().eq('id', id);
+      if (dErr) throw dErr;
+
+      await recalculateProjectProgress(existing.project_id);
+
+      const authUser: AuthUser = (req as any).authUser;
+      await supabase.from('activities').insert(mapActivityToDb({
+        id: `act-${Date.now()}`,
+        user: authUser.displayName,
+        avatar: authUser.avatar,
+        action: 'removed task',
+        target: existing.title.substring(0, 32),
+        timestamp: 'Just now',
+        type: 'task',
+      }));
+    } else {
+      const task = localTasks.find(t => t.id === id);
+      if (!task) return res.status(404).json({ error: 'Task not found' });
+
+      localTasks = localTasks.filter(t => t.id !== id);
+      await recalculateProjectProgress(task.projectId);
+
+      const authUser: AuthUser = (req as any).authUser;
+      localActivities = [{
+        id: `act-${Date.now()}`,
+        user: authUser.displayName,
+        avatar: authUser.avatar,
+        action: 'removed task',
+        target: task.title.substring(0, 32),
+        timestamp: 'Just now',
+        type: 'task',
+      }, ...localActivities];
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/projects/:id — full project edit
+app.put('/api/projects/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, category, repository, activeSprint } = req.body;
+
+    if (supabase) {
+      const updates: any = {};
+      if (name !== undefined) updates.name = name;
+      if (description !== undefined) updates.description = description;
+      if (category !== undefined) updates.category = category;
+      if (repository !== undefined) updates.repository = repository;
+      if (activeSprint !== undefined) updates.active_sprint = activeSprint;
+      updates.last_updated = 'Just now';
+
+      const { data: updated, error } = await supabase.from('projects').update(updates).eq('id', id).select('*').single();
+      if (error || !updated) throw error;
+      return res.json(mapProjectFromDb(updated));
+    } else {
+      const idx = localProjects.findIndex(p => p.id === id);
+      if (idx === -1) return res.status(404).json({ error: 'Project not found' });
+
+      const updated: Project = {
+        ...localProjects[idx],
+        ...(name !== undefined && { name }),
+        ...(description !== undefined && { description }),
+        ...(category !== undefined && { category }),
+        ...(repository !== undefined && { repository }),
+        ...(activeSprint !== undefined && { activeSprint }),
+        lastUpdated: 'Just now',
+      };
+      localProjects[idx] = updated;
+      return res.json(updated);
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/projects/:id
+app.delete('/api/projects/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (supabase) {
+      // Delete tasks first, then milestones, then project
+      await supabase.from('tasks').delete().eq('project_id', id);
+      await supabase.from('milestones').delete().eq('project_id', id);
+      const { error } = await supabase.from('projects').delete().eq('id', id);
+      if (error) throw error;
+    } else {
+      localTasks = localTasks.filter(t => t.projectId !== id);
+      localMilestones = localMilestones.filter(m => m.projectId !== id);
+      localProjects = localProjects.filter(p => p.id !== id);
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get('/api/activities', requireAuth, async (req, res) => {
   try {
     if (supabase) {

@@ -3,13 +3,11 @@ import {
   Plus, 
   ExternalLink, 
   AlertCircle, 
-  GitBranch, 
   Calendar, 
-  Grid, 
   ArrowUpRight,
   TrendingUp,
-  FolderLock,
-  Code
+  Code,
+  Pencil
 } from 'lucide-react';
 import { Project, Task, TeamMember } from '../types';
 
@@ -19,6 +17,7 @@ interface DashboardViewProps {
   teamMembers: TeamMember[];
   onNewProject: () => void;
   onSelectProject: (projectId: string) => void;
+  onEditProject: (project: Project) => void;
   onViewTasks: () => void;
 }
 
@@ -28,6 +27,7 @@ export default function DashboardView({
   teamMembers, 
   onNewProject, 
   onSelectProject,
+  onEditProject,
   onViewTasks
 }: DashboardViewProps) {
   
@@ -264,7 +264,7 @@ export default function DashboardView({
                   )}
                 </div>
 
-                {/* Task counter status badge */}
+                {/* Task counter + edit button */}
                 <div id={`project-tasks-badge-container-${project.id}`} className="flex items-center gap-3 text-[10px] font-mono">
                   <span id={`project-issues-count-${project.id}`} className="text-neutral-500 flex items-center gap-1">
                     <AlertCircle id={`issues-icon-${project.id}`} className="h-3 w-3 text-neutral-600" />
@@ -273,6 +273,14 @@ export default function DashboardView({
                   <span id={`project-task-completion-${project.id}`} className="text-neutral-400 font-semibold bg-neutral-900 px-1.5 py-0.5 rounded">
                     {stats.completed}/{stats.total} done
                   </span>
+                  <button
+                    id={`edit-project-btn-${project.id}`}
+                    onClick={(e) => { e.stopPropagation(); onEditProject(project); }}
+                    className="p-1 rounded text-neutral-600 hover:text-indigo-400 hover:bg-neutral-900 transition-colors"
+                    title="Edit project"
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
                 </div>
               </div>
             </div>

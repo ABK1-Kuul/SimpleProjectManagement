@@ -1,7 +1,6 @@
 import React, { useState, useRef } from 'react';
 import {
   Search,
-  Sparkles,
   Clock,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -11,7 +10,6 @@ interface HeaderProps {
   title: string;
   subtitle: string;
   onOpenSearch: () => void;
-  onSimulateCommit: () => void;
 }
 
 function getAvatarGradient(avatar: string) {
@@ -25,7 +23,7 @@ function getAvatarGradient(avatar: string) {
   return gradients[idx];
 }
 
-export default function Header({ title, subtitle, onOpenSearch, onSimulateCommit }: HeaderProps) {
+export default function Header({ title, subtitle, onOpenSearch }: HeaderProps) {
   const { user } = useAuth();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const avatarBtnRef = useRef<HTMLButtonElement>(null);
@@ -64,22 +62,8 @@ export default function Header({ title, subtitle, onOpenSearch, onSimulateCommit
 
         {/* Right Side Quick Actions */}
         <div id="header-right-controls" className="flex items-center gap-3">
-          {/* Sim Commit button */}
-          <button
-            id="simulate-activity-btn"
-            onClick={onSimulateCommit}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-neutral-900 hover:bg-neutral-850 border border-neutral-800 rounded-md text-[10px] font-mono font-medium text-neutral-300 hover:text-neutral-100 transition-all duration-150 shadow-xs"
-            title="Inject a mock developers commit event to populate activity timeline"
-          >
-            <Sparkles id="simulate-activity-icon" className="h-3 w-3 text-emerald-400" />
-            SIMULATE ACTIVITY
-          </button>
-
-          {/* Separator */}
-          <span id="header-controls-separator" className="h-4 w-px bg-neutral-850" />
-
           {/* Clock */}
-          <div id="header-clock" className="flex items-center gap-1 text-[10px] font-mono text-neutral-500">
+          <div id="header-clock" className="hidden md:flex items-center gap-1 text-[10px] font-mono text-neutral-500">
             <Clock id="header-clock-icon" className="h-3 w-3" />
             {formatTime()} UTC
           </div>

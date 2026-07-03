@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import toast from 'react-hot-toast';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import DashboardView from './components/DashboardView';
@@ -13,6 +14,8 @@ import AnalyticsView from './components/AnalyticsView';
 import TeamView from './components/TeamView';
 import NewProjectModal from './components/NewProjectModal';
 import NewTaskModal from './components/NewTaskModal';
+import EditTaskModal from './components/EditTaskModal';
+import EditProjectModal from './components/EditProjectModal';
 import CommandMenu from './components/CommandMenu';
 import LoginPage from './components/LoginPage';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -35,6 +38,8 @@ function Workspace() {
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isCommandMenuOpen, setIsCommandMenuOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
 
   const refreshData = async () => {
     try {
@@ -65,6 +70,7 @@ function Workspace() {
       setMilestones(milestonesData);
     } catch (error) {
       console.error('Failed to sync context with backend database:', error);
+      toast.error('Failed to load data from server');
     } finally {
       setLoading(false);
     }
@@ -104,8 +110,10 @@ function Workspace() {
 
       if (!res.ok) throw new Error('API refused task status change');
       await refreshData();
+      toast.success('Task status updated');
     } catch (error) {
       console.error('Failed to update task status:', error);
+      toast.error('Failed to update task status');
       refreshData();
     }
   };
@@ -125,8 +133,10 @@ function Workspace() {
 
       if (!res.ok) throw new Error('API refused task reassignment');
       await refreshData();
+      toast.success('Task reassigned');
     } catch (error) {
       console.error('Failed to reassign task assignee:', error);
+      toast.error('Failed to reassign task');
       refreshData();
     }
   };
@@ -149,8 +159,10 @@ function Workspace() {
       if (!res.ok) throw new Error('Failed to create project on server');
       await refreshData();
       setActiveTab('dashboard');
+      toast.success(`Project "${newProjData.name}" created`);
     } catch (error) {
       console.error('Error creating project:', error);
+      toast.error('Failed to create project');
     }
   };
 
@@ -173,57 +185,10 @@ function Workspace() {
 
       if (!res.ok) throw new Error('Failed to create task on server');
       await refreshData();
+      toast.success('Task created');
     } catch (error) {
       console.error('Error creating task:', error);
-    }
-  };
-
-  const handleSimulateCommit = async () => {
-    if (teamMembers.length === 0 || projects.length === 0) return;
-
-    const randomDev = teamMembers[Math.floor(Math.random() * teamMembers.length)];
-    const randomProj = projects[Math.floor(Math.random() * projects.length)];
-
-    const commitActions = [
-      { text: 'pushed ref update to origin/main on', type: 'commit' as const },
-      { text: 'resolved merge conflict inside routing file on', type: 'commit' as const },
-      { text: 'patched critical JWT signature checks on', type: 'project' as const },
-      { text: 'optimized memory index lookup latency for', type: 'commit' as const },
-      { text: 'integrated Tailwind variables configuration on', type: 'task' as const }
-    ];
-
-    const chosenAction = commitActions[Math.floor(Math.random() * commitActions.length)];
-
-    try {
-      const res = await fetch('/api/activities', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          user: randomDev.name,
-          avatar: randomDev.avatar,
-          action: chosenAction.text,
-          target: randomProj.name,
-          type: chosenAction.type
-        })
-      });
-
-      if (!res.ok) throw new Error('Failed to log activity simulation');
-
-      const activeTasksOfProj = tasks.filter(t => t.projectId === randomProj.id && t.status !== 'done');
-      if (activeTasksOfProj.length > 0) {
-        const taskToFinish = activeTasksOfProj[Math.floor(Math.random() * activeTasksOfProj.length)];
-        await fetch(`/api/tasks/${taskToFinish.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ status: 'done' })
-        });
-      }
-
-      await refreshData();
-    } catch (error) {
-      console.error('Error simulating commit activity:', error);
+      toast.error('Failed to create task');
     }
   };
 
@@ -237,6 +202,72 @@ function Workspace() {
     if (task) {
       setSelectedProjectId(task.projectId);
       setActiveTab('kanban');
+    }
+  };
+
+  const handleEditTask = async (taskId: string, updates: Partial<Task>) => {
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(updates),
+      });
+      if (!res.ok) throw new Error('Failed to update task');
+      await refreshData();
+      toast.success('Task updated');
+    } catch {
+      toast.error('Failed to update task');
+      throw new Error('save failed');
+    }
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Failed to delete task');
+      setTasks(prev => prev.filter(t => t.id !== taskId));
+      await refreshData();
+      toast.success('Task deleted');
+    } catch {
+      toast.error('Failed to delete task');
+      throw new Error('delete failed');
+    }
+  };
+
+  const handleEditProject = async (projectId: string, updates: Partial<Project>) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(updates),
+      });
+      if (!res.ok) throw new Error('Failed to update project');
+      await refreshData();
+      toast.success('Project updated');
+    } catch {
+      toast.error('Failed to update project');
+      throw new Error('save failed');
+    }
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Failed to delete project');
+      setProjects(prev => prev.filter(p => p.id !== projectId));
+      await refreshData();
+      toast.success('Project deleted');
+    } catch {
+      toast.error('Failed to delete project');
+      throw new Error('delete failed');
     }
   };
 
@@ -297,7 +328,6 @@ function Workspace() {
           title={currentMeta.title}
           subtitle={currentMeta.subtitle}
           onOpenSearch={() => setIsCommandMenuOpen(true)}
-          onSimulateCommit={handleSimulateCommit}
         />
 
         {/* Tab View Transition Panel */}
@@ -319,6 +349,7 @@ function Workspace() {
                   teamMembers={teamMembers}
                   onNewProject={() => setIsProjectModalOpen(true)}
                   onSelectProject={handleSelectProject}
+                  onEditProject={(p) => setEditingProject(p)}
                   onViewTasks={() => setActiveTab('kanban')}
                 />
               )}
@@ -330,6 +361,7 @@ function Workspace() {
                   teamMembers={teamMembers}
                   onNewTask={() => setIsTaskModalOpen(true)}
                   onUpdateTaskStatus={handleUpdateTaskStatus}
+                  onEditTask={(t) => setEditingTask(t)}
                   selectedProjectId={selectedProjectId}
                   setSelectedProjectId={setSelectedProjectId}
                 />
@@ -378,6 +410,24 @@ function Workspace() {
         tasks={tasks}
         onSelectProject={handleSelectProject}
         onSelectTask={handleSelectTask}
+      />
+
+      <EditTaskModal
+        task={editingTask}
+        isOpen={editingTask !== null}
+        onClose={() => setEditingTask(null)}
+        projects={projects}
+        teamMembers={teamMembers}
+        onSave={handleEditTask}
+        onDelete={handleDeleteTask}
+      />
+
+      <EditProjectModal
+        project={editingProject}
+        isOpen={editingProject !== null}
+        onClose={() => setEditingProject(null)}
+        onSave={handleEditProject}
+        onDelete={handleDeleteProject}
       />
     </div>
   );
