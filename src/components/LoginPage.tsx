@@ -44,7 +44,15 @@ const UserIcon = () => (
 );
 
 // Animated background particles
-function Particle({ delay, x, y, size }: { delay: number; x: number; y: number; size: number }) {
+interface ParticleProps {
+  key?: React.Key;
+  delay: number;
+  x: number;
+  y: number;
+  size: number;
+}
+
+function Particle({ delay, x, y, size }: ParticleProps) {
   return (
     <motion.div
       style={{

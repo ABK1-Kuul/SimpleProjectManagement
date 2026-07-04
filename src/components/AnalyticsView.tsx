@@ -1,16 +1,8 @@
-import React from 'react';
-import { 
-  GitCommit, 
-  GitPullRequest, 
-  FolderGit2, 
-  CheckCircle2, 
-  AlertCircle, 
-  Clock, 
-  Sliders, 
-  CornerDownRight,
-  TrendingUp,
-  Flame,
-  Milestone as MilestoneIcon
+import React, { useState } from 'react';
+import {
+  GitCommit, GitPullRequest, FolderGit2, CheckCircle2,
+  AlertCircle, Clock, CornerDownRight, TrendingUp,
+  Milestone as MilestoneIcon, Filter, X,
 } from 'lucide-react';
 import { Project, Activity, Milestone } from '../types';
 
@@ -21,205 +13,209 @@ interface AnalyticsViewProps {
 }
 
 export default function AnalyticsView({ projects, activities, milestones }: AnalyticsViewProps) {
-  
-  const getProjectName = (projectId: string) => {
-    return projects.find(p => p.id === projectId)?.name || 'Unknown Project';
-  };
+  const [activityProjectFilter, setActivityProjectFilter] = useState('all');
+  const [activityTypeFilter,    setActivityTypeFilter]    = useState('all');
+
+  const getProjectName = (projectId: string) =>
+    projects.find(p => p.id === projectId)?.name ?? 'Unknown Project';
+
+  // ── Filtered activities ────────────────────────────────────────────────────
+  const filteredActivities = activities.filter(act => {
+    const matchType    = activityTypeFilter === 'all' || act.type === activityTypeFilter;
+    const matchProject = activityProjectFilter === 'all' || act.target.toLowerCase().includes(
+      (projects.find(p => p.id === activityProjectFilter)?.name ?? '').toLowerCase()
+    );
+    return matchType && matchProject;
+  });
+
+  const hasFilters = activityProjectFilter !== 'all' || activityTypeFilter !== 'all';
 
   return (
-    <div id="analytics-view-root" className="flex-1 overflow-y-auto p-6 space-y-6 bg-[#09090b]">
-      
-      {/* Visual Analytics Grid */}
-      <div id="analytics-grid" className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        {/* Milestone Status Tracker (Vercel Style) */}
-        <div id="milestones-card" className="bg-[#09090b] border border-neutral-800 rounded-xl p-5 space-y-4">
-          <div id="milestones-card-header" className="flex items-center justify-between">
+    <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-[#09090b]">
+
+      {/* ── Top grid: Milestones + Health ────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        {/* Milestones */}
+        <div className="bg-[#09090b] border border-neutral-800 rounded-xl p-5 space-y-4">
+          <div className="flex items-center justify-between">
             <div>
-              <h3 id="milestones-heading" className="text-xs font-sans font-semibold text-neutral-100 flex items-center gap-1.5">
-                <MilestoneIcon id="milestone-icon" className="h-4 w-4 text-neutral-400" />
+              <h3 className="text-xs font-sans font-semibold text-neutral-100 flex items-center gap-1.5">
+                <MilestoneIcon className="h-4 w-4 text-neutral-400" />
                 Cross-Project Milestones
               </h3>
-              <p id="milestones-subheading" className="text-[11px] text-neutral-500">Scheduled releases, targets, and live progress indicators.</p>
+              <p className="text-[11px] text-neutral-500">Scheduled releases, targets, and live progress.</p>
             </div>
-            <span id="milestone-count-badge" className="text-[10px] font-mono text-neutral-400 bg-neutral-900 border border-neutral-800 px-2 py-0.5 rounded">
+            <span className="text-[10px] font-mono text-neutral-400 bg-neutral-900 border border-neutral-800 px-2 py-0.5 rounded">
               {milestones.length} Tracked
             </span>
           </div>
 
-          <div id="milestones-list" className="space-y-3.5">
-            {milestones.map((milestone) => {
-              const projName = getProjectName(milestone.projectId);
-              return (
-                <div 
-                  id={`milestone-item-${milestone.id}`}
-                  key={milestone.id} 
-                  className="bg-neutral-900/35 border border-neutral-800 p-3 rounded-lg space-y-2.5 hover:border-neutral-700 transition-colors"
-                >
-                  <div id={`milestone-top-${milestone.id}`} className="flex items-start justify-between">
-                    <div id={`milestone-title-group-${milestone.id}`} className="space-y-1">
-                      <span id={`milestone-project-${milestone.id}`} className="text-[9px] font-mono text-neutral-500 uppercase tracking-wider">
-                        {projName}
-                      </span>
-                      <h4 id={`milestone-name-${milestone.id}`} className="text-xs font-sans font-medium text-neutral-200">
-                        {milestone.name}
-                      </h4>
-                    </div>
-
-                    <span 
-                      id={`milestone-status-${milestone.id}`}
-                      className={`text-[9px] font-mono px-2 py-0.5 rounded flex items-center gap-1 ${
-                        milestone.status === 'completed' 
-                           ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/40' 
-                           : milestone.status === 'delayed'
-                           ? 'bg-rose-950/40 text-rose-400 border border-rose-900/40'
-                           : 'bg-neutral-800 text-neutral-400 border border-neutral-750/60'
-                      }`}
-                    >
-                      {milestone.status === 'completed' && <CheckCircle2 id={`milestone-check-${milestone.id}`} className="h-2.5 w-2.5" />}
-                      {milestone.status === 'delayed' && <AlertCircle id={`milestone-alert-${milestone.id}`} className="h-2.5 w-2.5" />}
-                      {milestone.status === 'pending' && <Clock id={`milestone-clock-${milestone.id}`} className="h-2.5 w-2.5" />}
-                      {milestone.status.toUpperCase()}
+          <div className="space-y-3.5">
+            {milestones.map(milestone => (
+              <div key={milestone.id} className="bg-neutral-900/35 border border-neutral-800 p-3 rounded-lg space-y-2.5 hover:border-neutral-700 transition-colors">
+                <div className="flex items-start justify-between">
+                  <div className="space-y-1">
+                    <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-wider">
+                      {getProjectName(milestone.projectId)}
                     </span>
+                    <h4 className="text-xs font-sans font-medium text-neutral-200">{milestone.name}</h4>
                   </div>
-
-                  {/* Progressive tracking */}
-                  <div id={`milestone-progress-group-${milestone.id}`} className="space-y-1.5">
-                    <div id={`milestone-progress-flex-${milestone.id}`} className="flex items-center justify-between text-[10px] font-mono">
-                      <span id={`milestone-due-${milestone.id}`} className="text-neutral-500">Target Release: {milestone.dueDate}</span>
-                      <span id={`milestone-pct-${milestone.id}`} className="text-neutral-300 font-medium">{milestone.progress}%</span>
-                    </div>
-                    <div id={`milestone-bar-bg-${milestone.id}`} className="h-1 bg-[#09090b] rounded-full overflow-hidden">
-                      <div 
-                        id={`milestone-bar-fill-${milestone.id}`}
-                        className={`h-full transition-all duration-500 ${
-                          milestone.status === 'completed' 
-                            ? 'bg-emerald-500' 
-                            : milestone.status === 'delayed'
-                            ? 'bg-rose-500'
-                            : 'bg-neutral-400'
-                        }`}
-                        style={{ width: `${milestone.progress}%` }}
-                      />
-                    </div>
+                  <span className={`text-[9px] font-mono px-2 py-0.5 rounded flex items-center gap-1 ${
+                    milestone.status === 'completed' ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/40' :
+                    milestone.status === 'delayed'   ? 'bg-rose-950/40 text-rose-400 border border-rose-900/40' :
+                                                       'bg-neutral-800 text-neutral-400 border border-neutral-700/60'
+                  }`}>
+                    {milestone.status === 'completed' && <CheckCircle2 className="h-2.5 w-2.5" />}
+                    {milestone.status === 'delayed'   && <AlertCircle  className="h-2.5 w-2.5" />}
+                    {milestone.status === 'pending'   && <Clock        className="h-2.5 w-2.5" />}
+                    {milestone.status.toUpperCase()}
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px] font-mono">
+                    <span className="text-neutral-500">Target: {milestone.dueDate}</span>
+                    <span className="text-neutral-300 font-medium">{milestone.progress}%</span>
+                  </div>
+                  <div className="h-1 bg-[#09090b] rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 ${
+                        milestone.status === 'completed' ? 'bg-emerald-500' :
+                        milestone.status === 'delayed'   ? 'bg-rose-500'    : 'bg-neutral-400'
+                      }`}
+                      style={{ width: `${milestone.progress}%` }}
+                    />
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
+            {milestones.length === 0 && (
+              <div className="py-8 border border-dashed border-neutral-800 rounded-lg flex items-center justify-center">
+                <span className="text-[10px] font-mono text-neutral-600 uppercase">No milestones yet</span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Project Health Index matrix */}
-        <div id="health-index-card" className="bg-[#09090b] border border-neutral-800 rounded-xl p-5 space-y-4">
-          <div id="health-card-header" className="space-y-1">
-            <h3 id="health-heading" className="text-xs font-sans font-semibold text-neutral-100 flex items-center gap-1.5">
-              <TrendingUp id="health-icon" className="h-4 w-4 text-neutral-400" />
+        {/* Project Health Matrix */}
+        <div className="bg-[#09090b] border border-neutral-800 rounded-xl p-5 space-y-4">
+          <div className="space-y-1">
+            <h3 className="text-xs font-sans font-semibold text-neutral-100 flex items-center gap-1.5">
+              <TrendingUp className="h-4 w-4 text-neutral-400" />
               Project Integration Matrix
             </h3>
-            <p id="health-subheading" className="text-[11px] text-neutral-500">Linear comparison of project scopes and sprint health values.</p>
+            <p className="text-[11px] text-neutral-500">Linear comparison of project scope and sprint health.</p>
           </div>
 
-          {/* Table list */}
-          <div id="health-matrix-table" className="space-y-4 pt-2">
-            {projects.map((project) => (
-              <div id={`health-item-${project.id}`} key={project.id} className="space-y-2">
-                <div id={`health-row-${project.id}`} className="flex items-center justify-between text-xs">
-                  <div id={`health-name-group-${project.id}`} className="flex items-center gap-2">
-                    <span id={`health-project-badge-${project.id}`} className="h-1.5 w-1.5 rounded-full bg-neutral-500"></span>
-                    <span id={`health-project-name-${project.id}`} className="font-sans font-medium text-neutral-300">{project.name}</span>
+          <div className="space-y-4 pt-2">
+            {projects.map(project => (
+              <div key={project.id} className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="h-1.5 w-1.5 rounded-full bg-neutral-500" />
+                    <span className="font-sans font-medium text-neutral-300">{project.name}</span>
                   </div>
-                  <span id={`health-project-sprint-${project.id}`} className="font-mono text-[10px] text-neutral-500">{project.activeSprint.split(' - ')[0]}</span>
+                  <span className="font-mono text-[10px] text-neutral-500">{project.activeSprint.split(' - ')[0]}</span>
                 </div>
-                
-                {/* Dual metric bar */}
-                <div id={`health-bar-container-${project.id}`} className="grid grid-cols-5 gap-2 items-center">
-                  <div id={`health-bar-col-track-${project.id}`} className="col-span-4 h-1.5 bg-neutral-900 rounded-sm overflow-hidden flex">
-                    {/* Progression segment */}
-                    <div 
-                      id={`health-progress-segment-${project.id}`}
-                      className="bg-neutral-100 h-full border-r border-[#09090b]" 
+                <div className="grid grid-cols-5 gap-2 items-center">
+                  <div className="col-span-4 h-1.5 bg-neutral-900 rounded-sm overflow-hidden flex">
+                    <div
+                      className="bg-neutral-100 h-full border-r border-[#09090b] transition-all duration-500"
                       style={{ width: `${project.progress}%` }}
                       title={`Progress: ${project.progress}%`}
                     />
-                    {/* Remaining segment */}
-                    <div 
-                      id={`health-remaining-segment-${project.id}`}
-                      className="bg-neutral-900 h-full flex-1" 
-                      title="Remaining backlog scope"
-                    />
+                    <div className="bg-neutral-900 h-full flex-1" title="Remaining scope" />
                   </div>
-                  <span id={`health-pct-label-${project.id}`} className="text-right text-[10px] font-mono text-neutral-400">{project.progress}%</span>
+                  <span className="text-right text-[10px] font-mono text-neutral-400">{project.progress}%</span>
                 </div>
               </div>
             ))}
           </div>
 
-          <div id="analytics-legend" className="pt-4 border-t border-neutral-800/55 flex items-center justify-between text-[9px] font-mono text-neutral-500 uppercase">
-            <span id="legend-left" className="flex items-center gap-1">
-              <span id="legend-active-dot" className="h-1.5 w-1.5 bg-neutral-100 rounded-full"></span> Completed Scope
-            </span>
-            <span id="legend-right" className="flex items-center gap-1">
-              <span id="legend-backlog-dot" className="h-1.5 w-1.5 bg-neutral-900 rounded-full"></span> Active Backlog
-            </span>
+          <div className="pt-4 border-t border-neutral-800/55 flex items-center justify-between text-[9px] font-mono text-neutral-500 uppercase">
+            <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 bg-neutral-100 rounded-full" /> Completed</span>
+            <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 bg-neutral-900 border border-neutral-700 rounded-full" /> Remaining</span>
           </div>
         </div>
       </div>
 
-      {/* Activity Timeline (Git Log Style) */}
-      <div id="timeline-card" className="bg-[#09090b] border border-neutral-800 rounded-xl p-5 space-y-4">
-        <div id="timeline-card-header" className="flex items-center justify-between">
+      {/* ── Activity Timeline ──────────────────────────────────────────────── */}
+      <div className="bg-[#09090b] border border-neutral-800 rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h3 id="timeline-heading" className="text-xs font-sans font-semibold text-neutral-100 flex items-center gap-1.5">
-              <FolderGit2 id="timeline-icon" className="h-4 w-4 text-neutral-400" />
+            <h3 className="text-xs font-sans font-semibold text-neutral-100 flex items-center gap-1.5">
+              <FolderGit2 className="h-4 w-4 text-neutral-400" />
               Unified Team Activity Log
             </h3>
-            <p id="timeline-subheading" className="text-[11px] text-neutral-500">Live stream of git events, merge requests, task movements, and integrations.</p>
+            <p className="text-[11px] text-neutral-500">Live stream of task movements, project events, and integrations.</p>
           </div>
-          <span id="timeline-git-badge" className="text-[10px] font-mono text-neutral-400 bg-neutral-900 border border-neutral-800 px-2 py-0.5 rounded">
-            git branch: main
-          </span>
+
+          {/* Filters */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <Filter className="h-3 w-3 text-neutral-600" />
+              <select
+                value={activityTypeFilter}
+                onChange={e => setActivityTypeFilter(e.target.value)}
+                aria-label="Filter by type"
+                className="px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-[10px] font-mono text-neutral-400 focus:outline-none focus:border-neutral-600"
+              >
+                <option value="all">All types</option>
+                <option value="task">Tasks</option>
+                <option value="project">Projects</option>
+                <option value="commit">Commits</option>
+              </select>
+            </div>
+
+            {hasFilters && (
+              <button
+                onClick={() => { setActivityProjectFilter('all'); setActivityTypeFilter('all'); }}
+                className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono text-neutral-400 hover:text-neutral-200 border border-neutral-800 hover:border-neutral-700 rounded transition-colors"
+              >
+                <X className="h-3 w-3" /> Clear
+              </button>
+            )}
+
+            <span className="text-[10px] font-mono text-neutral-600 bg-neutral-900 border border-neutral-800 px-2 py-1 rounded">
+              {filteredActivities.length} events
+            </span>
+          </div>
         </div>
 
-        {/* Timeline Log */}
-        <div id="timeline-events-container" className="space-y-0 font-mono text-xs">
-          {activities.map((act, index) => {
-            const isCommit = act.type === 'commit';
-            const isProject = act.type === 'project';
-            const isTask = act.type === 'task';
-
-            // Generate an arbitrary mock git hash for visual impact (aesthetic parity)
-            const mockHash = `c4f${100 + index}e`;
-
-            return (
-              <div 
-                id={`timeline-event-${act.id}`}
-                key={act.id} 
-                className="flex items-start gap-4 py-3 hover:bg-neutral-900/30 px-3 rounded-lg transition-colors border-b border-neutral-850 last:border-0"
-              >
-                {/* Hash */}
-                <span id={`timeline-hash-${act.id}`} className="text-neutral-600 text-[11px] select-none shrink-0 font-semibold">{mockHash}</span>
-
-                {/* Git icons */}
-                <div id={`timeline-icon-container-${act.id}`} className="flex items-center justify-center pt-0.5 shrink-0">
-                  {isCommit && <GitCommit id={`commit-icon-${act.id}`} className="h-3.5 w-3.5 text-neutral-400" />}
-                  {isTask && <CornerDownRight id={`task-icon-${act.id}`} className="h-3.5 w-3.5 text-neutral-500" />}
-                  {isProject && <GitPullRequest id={`project-icon-${act.id}`} className="h-3.5 w-3.5 text-neutral-500" />}
-                </div>
-
-                {/* Event text content */}
-                <div id={`timeline-body-${act.id}`} className="flex-1 min-w-0">
-                  <div id={`timeline-meta-line-${act.id}`} className="flex items-baseline justify-between gap-4">
-                    <p id={`timeline-text-${act.id}`} className="text-neutral-300 font-sans text-xs">
-                      <span id={`timeline-author-${act.id}`} className="font-mono text-neutral-400 font-semibold text-[11px] mr-1.5">{act.user}</span>
-                      <span id={`timeline-action-${act.id}`} className="text-neutral-500">{act.action}</span>
-                      <span id={`timeline-target-${act.id}`} className="font-mono text-neutral-200 ml-1.5 px-1 py-0.5 bg-neutral-900 border border-neutral-800 rounded text-[11px]">{act.target}</span>
-                    </p>
-                    <span id={`timeline-time-${act.id}`} className="text-neutral-650 text-[10px] shrink-0 font-mono">{act.timestamp}</span>
+        {/* Log */}
+        <div className="space-y-0 font-mono text-xs">
+          {filteredActivities.length === 0 ? (
+            <div className="py-10 border border-dashed border-neutral-800 rounded-lg flex items-center justify-center">
+              <span className="text-[10px] font-mono text-neutral-600 uppercase">No activity matches filters</span>
+            </div>
+          ) : (
+            filteredActivities.map((act, i) => {
+              const hash = `c4f${100 + i}e`;
+              return (
+                <div
+                  key={act.id}
+                  className="flex items-start gap-4 py-3 hover:bg-neutral-900/30 px-3 rounded-lg transition-colors border-b border-neutral-800/40 last:border-0"
+                >
+                  <span className="text-neutral-700 text-[11px] select-none shrink-0 font-semibold">{hash}</span>
+                  <div className="flex items-center justify-center pt-0.5 shrink-0">
+                    {act.type === 'commit'  && <GitCommit      className="h-3.5 w-3.5 text-neutral-400" />}
+                    {act.type === 'task'    && <CornerDownRight className="h-3.5 w-3.5 text-neutral-500" />}
+                    {act.type === 'project' && <GitPullRequest  className="h-3.5 w-3.5 text-neutral-500" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-4">
+                      <p className="text-neutral-300 font-sans text-xs">
+                        <span className="font-mono text-neutral-400 font-semibold text-[11px] mr-1.5">{act.user}</span>
+                        <span className="text-neutral-500">{act.action}</span>
+                        <span className="font-mono text-neutral-200 ml-1.5 px-1 py-0.5 bg-neutral-900 border border-neutral-800 rounded text-[11px]">{act.target}</span>
+                      </p>
+                      <span className="text-neutral-600 text-[10px] shrink-0">{act.timestamp}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
       </div>
     </div>

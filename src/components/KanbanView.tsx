@@ -54,7 +54,7 @@ interface TaskCardProps {
   isDragOverlay?: boolean;
 }
 
-function TaskCard({ task, projects, teamMembers, onEditTask, isDragOverlay = false }: TaskCardProps) {
+function TaskCard({ task, projects, teamMembers, onEditTask, isDragOverlay = false }: TaskCardProps & React.HTMLAttributes<HTMLDivElement>) {
   const assignee = teamMembers.find(m => m.id === task.assigneeId) ?? { name: 'Unassigned', avatar: '?', role: '' };
   const projectName = projects.find(p => p.id === task.projectId)?.name ?? 'Unknown';
 
@@ -161,7 +161,7 @@ interface ColumnProps {
   isOver: boolean;
 }
 
-function KanbanColumn({ column, tasks, projects, teamMembers, onEditTask, isOver }: ColumnProps) {
+function KanbanColumn({ column, tasks, projects, teamMembers, onEditTask, isOver }: ColumnProps & React.HTMLAttributes<HTMLDivElement>) {
   const { setNodeRef } = useDroppable({ id: column.id });
 
   return (
